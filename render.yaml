@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: max-comment-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn bot:app
+    envVars:
+      - key: MAX_BOT_TOKEN
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: NOTIFY_CHAT_ID
+        sync: false
