@@ -61,7 +61,6 @@ def build_post_link(chat_id, post_id):
         encoded = base64.urlsafe_b64encode(seq_bytes).decode().rstrip('=')
         return f"https://max.ru/c/{chat_id}/{encoded}"
 
-    # Запасной вариант — ссылка на канал
     return f"https://max.ru/@{CHANNEL_USERNAME}"
 
 
@@ -108,11 +107,14 @@ def send_message(user_id=None, chat_id=None, text="", attachments=None):
 
 def answer_callback(callback_id, notification=None):
     """Подтверждение нажатия callback-кнопки."""
+    if not callback_id:
+        logger.warning("answer_callback: callback_id пустой!")
+        return
     try:
         body = {}
         if notification:
             body["notification"] = notification
-        requests.post(
+        response = requests.post(
             f"{API_URL}/answers",
             headers={"Authorization": TOKEN, "Content-Type": "application/json"},
             params={"callback_id": callback_id},
@@ -120,6 +122,7 @@ def answer_callback(callback_id, notification=None):
             timeout=10,
             verify=False
         )
+        logger.info(f"answer_callback: status={response.status_code}, body={response.text}")
     except Exception as e:
         logger.error(f"Ошибка answer_callback: {e}")
 
@@ -190,17 +193,15 @@ def webhook():
         callback = data.get("callback", {})
         callback_id = callback.get("callback_id", "")
         payload = callback.get("payload", "")
-        # user_id может быть в разных местах
         sender_id = (
             callback.get("user", {}).get("user_id", "")
             or data.get("sender", {}).get("user_id", "")
             or data.get("user", {}).get("user_id", "")
         )
 
-        logger.info(f"Callback от user_id={sender_id}, payload={payload}")
+        logger.info(f"Callback от user_id={sender_id}, payload={payload}, callback_id={callback_id}")
 
         if payload.startswith("reply:") and sender_id:
-            # Формат: reply:{post_id}:{comment_mid}
             parts = payload.split(":", 2)
             if len(parts) == 3:
                 post_id = parts[1]
@@ -209,7 +210,13 @@ def webhook():
                     "post_id": post_id,
                     "comment_mid": comment_mid
                 }
-                answer_callback(callback_id, "✍️ Напишите ответ — бот отправит его как комментарий-ответ")
+                # Отправляем callback-ответ
+                answer_callback(callback_id, "✍️ Напишите ответ — бот отправит его как комментарий")
+                # Дублируем обычным сообщением — точно увидишь
+                send_message(
+                    user_id=sender_id,
+                    text="✍️ Напишите ответ следующим сообщением — бот отправит его как комментарий-ответ."
+                )
             else:
                 answer_callback(callback_id, "Ошибка: неверный формат")
         else:
@@ -264,7 +271,7 @@ def webhook():
         )
 
         post_link = build_post_link(chat_id, post_id)
-        keyboard = build_keyboard(post_link)  # без кнопки "Ответить"
+        keyboard = build_keyboard(post_link)
 
         send_message(user_id=NOTIFY_CHAT_ID, text=notification, attachments=keyboard)
 
