@@ -5,7 +5,7 @@ from flask import Flask, request, jsonify
 import requests
 import urllib3
 
-# Отключаем предупреждения об SSL (т.к. отключаем проверку сертификата)
+# Отключаем предупреждения об SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Настройка логирования
@@ -24,8 +24,22 @@ API_URL = "https://platform-api2.max.ru"
 app = Flask(__name__)
 
 
-def send_message(chat_id, text):
-    """Отправка сообщения в чат MAX."""
+def send_message(user_id=None, chat_id=None, text=""):
+    """Отправка сообщения в чат MAX.
+
+    Для личных сообщений (диалог) — user_id.
+    Для групповых чатов и каналов — chat_id.
+    Передаётся как query-параметр, не в теле!
+    """
+    params = {}
+    if user_id:
+        params["user_id"] = int(user_id)
+    elif chat_id:
+        params["chat_id"] = int(chat_id)
+    else:
+        logger.error("Не указан user_id или chat_id для отправки!")
+        return
+
     try:
         response = requests.post(
             f"{API_URL}/messages",
@@ -33,14 +47,12 @@ def send_message(chat_id, text):
                 "Authorization": TOKEN,
                 "Content-Type": "application/json"
             },
-            json={
-                "chat_id": int(chat_id),
-                "text": text
-            },
+            params=params,
+            json={"text": text},
             timeout=10,
             verify=False
         )
-        logger.info(f"Отправка сообщения: {response.status_code}")
+        logger.info(f"Отправка: status={response.status_code}, body={response.text}")
     except Exception as e:
         logger.error(f"Ошибка отправки: {e}")
 
@@ -75,7 +87,7 @@ def webhook():
             f"{comment_text}"
         )
         logger.info(f"Уведомление: {notification}")
-        send_message(NOTIFY_CHAT_ID, notification)
+        send_message(user_id=NOTIFY_CHAT_ID, text=notification)
 
     # Обработка изменения комментария
     elif update_type == "comment_edited":
@@ -89,14 +101,14 @@ def webhook():
             f"Автор: {author}\n\n"
             f"{comment_text}"
         )
-        send_message(NOTIFY_CHAT_ID, notification)
+        send_message(user_id=NOTIFY_CHAT_ID, text=notification)
 
     # Обработка удаления комментария
     elif update_type == "comment_removed":
         message = data.get("message", {})
         post_id = message.get("recipient", {}).get("post_id", "")
         notification = f"Удалён комментарий под постом {post_id}"
-        send_message(NOTIFY_CHAT_ID, notification)
+        send_message(user_id=NOTIFY_CHAT_ID, text=notification)
 
     # Обработка обычных сообщений боту
     elif update_type == "message_created":
@@ -106,11 +118,12 @@ def webhook():
 
         logger.info(f"Сообщение от user_id={sender_id}: {text}")
 
-        if text.lower().startswith("/start"):
-            send_message(sender_id,
-                "Привет! Я бот для отслеживания комментариев. "
-                "Я буду присылать уведомления о новых комментариях "
-                "в ваш канал."
+        if text and text.lower().startswith("/start"):
+            send_message(
+                user_id=sender_id,
+                text="Привет! Я бот для отслеживания комментариев. "
+                     "Я буду присылать уведомления о новых комментариях "
+                     "в ваш канал."
             )
 
     return jsonify({"ok": True}), 200
