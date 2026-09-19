@@ -3,8 +3,12 @@ import hmac
 import logging
 from flask import Flask, request, jsonify
 import requests
+import urllib3
 
-# Настройка логирования — чтобы видеть, что происходит
+# Отключаем предупреждения об SSL (т.к. отключаем проверку сертификата)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -33,7 +37,8 @@ def send_message(chat_id, text):
                 "chat_id": int(chat_id),
                 "text": text
             },
-            timeout=10
+            timeout=10,
+            verify=False
         )
         logger.info(f"Отправка сообщения: {response.status_code}")
     except Exception as e:
@@ -46,7 +51,7 @@ def webhook():
     if request.method == "GET":
         return jsonify({"status": "ok"}), 200
 
-    # Проверка секрета — чтобы никто чужой не слал запросы
+    # Проверка секрета
     if WEBHOOK_SECRET:
         received_secret = request.headers.get("X-Max-Bot-Api-Secret", "")
         if not hmac.compare_digest(received_secret, WEBHOOK_SECRET):
@@ -99,11 +104,8 @@ def webhook():
         sender_id = message.get("sender", {}).get("user_id", "")
         text = message.get("body", {}).get("text", "")
 
-        # Если кто-то написал боту — запоминаем его chat_id
-        # (это пригодится для NOTIFY_CHAT_ID)
         logger.info(f"Сообщение от user_id={sender_id}: {text}")
 
-        # Отвечаем, что бот работает
         if text.lower().startswith("/start"):
             send_message(sender_id,
                 "Привет! Я бот для отслеживания комментариев. "
