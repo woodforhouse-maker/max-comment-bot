@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 TOKEN = os.environ.get("MAX_BOT_TOKEN", "")
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 NOTIFY_CHAT_ID = os.environ.get("NOTIFY_CHAT_ID", "")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 API_URL = "https://platform-api2.max.ru"
 CHANNEL_USERNAME = "channel_ignatyevy"
 
@@ -74,7 +75,40 @@ def register_commands():
         logger.error(f"Ошибка регистрации команд: {e}")
 
 
+def update_webhook_subscription():
+    """Обновляет подписку вебхука, добавляя bot_started в список событий."""
+    if not WEBHOOK_URL:
+        logger.warning("WEBHOOK_URL не задан — пропускаем обновление подписки")
+        return
+    update_types = [
+        "message_created",
+        "message_callback",
+        "bot_started",
+        "comment_created",
+        "comment_edited",
+        "comment_removed"
+    ]
+    body = {
+        "url": WEBHOOK_URL,
+        "update_types": update_types,
+    }
+    if WEBHOOK_SECRET:
+        body["secret"] = WEBHOOK_SECRET
+    try:
+        response = requests.post(
+            f"{API_URL}/subscriptions",
+            headers={"Authorization": TOKEN, "Content-Type": "application/json"},
+            json=body,
+            timeout=10,
+            verify=False
+        )
+        logger.info(f"Обновление подписки: status={response.status_code}, body={response.text}")
+    except Exception as e:
+        logger.error(f"Ошибка обновления подписки: {e}")
+
+
 register_commands()
+update_webhook_subscription()
 
 
 def get_post_seq(post_id):
@@ -302,13 +336,31 @@ def webhook():
 
     # === ОБРАБОТКА КНОПКИ «НАЧАТЬ» ===
     if update_type == "bot_started":
-        sender_id = (
-            data.get("user", {}).get("user_id") or
-            data.get("sender", {}).get("user_id") or
-            data.get("from", {}).get("user_id")
-        )
-        if sender_id:
-            logger.info(f"Пользователь нажал кнопку «Начать»: user_id={sender_id}")
+        chat_id = data.get("chat_id")
+        sender_id = data.get("user", {}).get("user_id")
+        logger.info(f"bot_started: chat_id={chat_id}, user_id={sender_id}, data={json.dumps(data, ensure_ascii=False)}")
+        if chat_id:
+            send_message(
+                chat_id=chat_id,
+                text=(
+                    "Привет! Я бот мастерской Игнатьевых. 🪵\n\n"
+                    "Здесь вы можете посмотреть каталог изделий, "
+                    "собрать корзину и оформить заказ.\n\n"
+                    "Вам не нужно ничего писать — просто нажмите кнопку:"
+                )
+            )
+            # Отправляем меню через chat_id
+            keyboard_buttons = [
+                [
+                    {"type": "message", "text": "📋 Каталог", "payload": "📋 Каталог"},
+                    {"type": "message", "text": "🛒 Корзина", "payload": "🛒 Корзина"}
+                ],
+                [
+                    {"type": "message", "text": "📞 Связаться с мастером", "payload": "📞 Связаться с мастером"}
+                ]
+            ]
+            send_message(chat_id=chat_id, text="Выберите действие — просто нажмите кнопку:", keyboard=keyboard_buttons)
+        elif sender_id:
             send_message(
                 user_id=sender_id,
                 text=(
@@ -331,6 +383,7 @@ def webhook():
             data.get("sender", {}).get("user_id", "") or
             data.get("user", {}).get("user_id", "")
         )
+
         logger.info(f"Callback от user_id={sender_id}, payload={payload}, callback_id={callback_id}")
 
         if payload.startswith("reply:") and sender_id:
@@ -422,7 +475,6 @@ def webhook():
         notification = f"🆕 Новый комментарий\nАвтор: {author_name}\n\n{comment_text}"
         post_link = build_post_link(chat_id, post_id)
         keyboard = build_keyboard(post_link, post_id, comment_mid)
-        logger.info(f"Уведомление: {notification}")
         send_message(user_id=NOTIFY_CHAT_ID, text=notification, attachments=keyboard)
 
     elif update_type == "comment_edited":
@@ -445,7 +497,7 @@ def webhook():
         logger.info(f"Сообщение от user_id={sender_id}: {text}")
         cmd = text.lower().strip() if text else ""
 
-        # Кнопки главного меню
+        # Кнопки типа message из главного меню
         if text and text.strip() == "📋 Каталог":
             show_catalog(sender_id)
             return jsonify({"ok": True}), 200
@@ -458,7 +510,6 @@ def webhook():
             send_message(user_id=sender_id, text="📞 Связаться с мастером:\n\nЕвгений\nТелефон: 8 (989) 622-37-32\n\nТакже вы можете заказать изделие через каталог — нажмите «📋 Каталог» и выберите понравившееся.")
             return jsonify({"ok": True}), 200
 
-        # Команды
         if cmd in ["/catalog", "/каталог"]:
             show_catalog(sender_id)
             return jsonify({"ok": True}), 200
@@ -531,10 +582,12 @@ def webhook():
                 else:
                     send_message(user_id=sender_id, text="❌ Не удалось отправить ответ. Проверьте, что бот — администратор канала с правом write.")
                     pending_replies[sender_id] = reply_data
+            return jsonify({"ok": True}), 200
 
         elif cmd and cmd.startswith("/start"):
             send_message(user_id=sender_id, text="Привет! Я бот мастерской Игнатьевых. 🪵\n\nЗдесь вы можете посмотреть каталог изделий, собрать корзину и оформить заказ.\n\nВам не нужно ничего писать — просто нажмите кнопку:")
             send_main_menu(sender_id)
+            return jsonify({"ok": True}), 200
 
     return jsonify({"ok": True}), 200
 
