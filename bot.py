@@ -84,9 +84,7 @@ def get_post_seq(post_id):
 
 
 def build_post_link(chat_id, post_id):
-    """Строит рабочую ссылку на пост в MAX.
-    Формат: https://max.ru/c/{chat_id}/{base64(seq)}
-    """
+    """Строит рабочую ссылку на пост в MAX."""
     if not chat_id or not post_id:
         return f"https://max.ru/@{CHANNEL_USERNAME}"
 
@@ -169,7 +167,7 @@ def answer_callback(callback_id, notification=None):
 
 
 def post_comment(post_id, text, reply_to_mid=None):
-    """Отправка комментария к посту. Если указан reply_to_mid — как ответ на комментарий."""
+    """Отправка комментария к посту."""
     body = {"text": text}
     if reply_to_mid:
         body["link"] = {"type": "reply", "mid": reply_to_mid}
@@ -299,6 +297,20 @@ def webhook():
             else:
                 answer_callback(callback_id, "Ошибка: неверный формат")
 
+        # --- Кнопка "Показать категорию" ---
+        elif payload.startswith("show_category:") and sender_id:
+            cat_index = int(payload.split(":", 1)[1])
+            categories = CATALOG_DATA.get("categories", [])
+            if cat_index < len(categories):
+                category = categories[cat_index]
+                answer_callback(callback_id, f"Открываю: {category['name']}")
+
+                # Показываем все товары в категории
+                for item in category.get("items", []):
+                    send_product_card(sender_id, item)
+            else:
+                answer_callback(callback_id, "Категория не найдена")
+
         # --- Кнопка "Добавить в корзину" ---
         elif payload.startswith("add_to_cart:") and sender_id:
             item_id = payload.split(":", 1)[1]
@@ -338,7 +350,6 @@ def webhook():
                     "Мастер скоро свяжется с вами для уточнения деталей."
                 )
             )
-            # Уведомление мастеру
             send_message(
                 user_id=NOTIFY_CHAT_ID,
                 text=(
@@ -348,6 +359,45 @@ def webhook():
                     f"Пользователь: {sender_id}"
                 )
             )
+
+        # --- Кнопка "Оформить заказ" ---
+        elif payload == "checkout" and sender_id:
+            cart = user_carts.get(sender_id, [])
+            if not cart:
+                answer_callback(callback_id, "Корзина пуста")
+                return jsonify({"ok": True}), 200
+
+            answer_callback(callback_id, "Заказ оформлен!")
+
+            order_text = "🛒 Оформлен заказ!\n\nТовары:\n"
+            total = 0
+            for item_id in cart:
+                item = find_item_by_id(item_id)
+                if item:
+                    order_text += f"• {item['name']} — {item['price']} ₽\n"
+                    total += item["price"]
+            order_text += f"\n💰 Итого: {total} ₽\n\n"
+            order_text += f"👤 Пользователь: {sender_id}"
+
+            # Уведомление мастеру
+            send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
+            # Подтверждение покупателю
+            send_message(
+                user_id=sender_id,
+                text=(
+                    "✅ Ваш заказ оформлен!\n"
+                    "Мастер скоро свяжется с вами для уточнения деталей.\n\n"
+                    "Спасибо за заказ! 🪵"
+                )
+            )
+            # Очищаем корзину
+            user_carts[sender_id] = []
+
+        # --- Кнопка "Очистить корзину" ---
+        elif payload == "clear_cart" and sender_id:
+            user_carts[sender_id] = []
+            answer_callback(callback_id, "Корзина очищена")
+            send_message(user_id=sender_id, text="🗑 Корзина очищена.")
 
         else:
             answer_callback(callback_id, "Ок")
@@ -419,7 +469,6 @@ def webhook():
                 send_message(user_id=sender_id, text="Каталог пока пуст.")
                 return jsonify({"ok": True}), 200
 
-            # Показываем все категории как кнопки
             buttons = []
             row = []
             for i, cat in enumerate(categories):
@@ -487,7 +536,6 @@ def webhook():
                 send_message(user_id=sender_id, text="✅ Ответ отправлен в канал!")
             else:
                 send_message(user_id=sender_id, text="❌ Не удалось отправить ответ. Проверьте, что бот — администратор канала с правом write.")
-                # Возвращаем в очередь на случай повторной попытки
                 pending_replies[sender_id] = reply_data
 
         elif text and text.lower().startswith("/start"):
