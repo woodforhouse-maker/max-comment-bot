@@ -1,0 +1,16 @@
+{
+  "categories": [
+    {
+      "name": "Мебель для отдыха",
+      "items": [
+        {
+          "id": "shezlong_01",
+          "name": "Шезлонг деревянный",
+          "price": 9500,
+          "description": "Массив сосны, регулируемая спинка, покрытие маслом",
+          "photo_url": "https://github.com/woodforhouse-maker/max-comment-bot/releases/download/v1.0/default.jpg"
+        }
+      ]
+    }
+  ]
+}
