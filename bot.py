@@ -61,6 +61,32 @@ def find_item_by_id(item_id):
 app = Flask(__name__)
 
 
+# === Регистрация команд бота в MAX ===
+def register_commands():
+    """Регистрирует команды бота, чтобы они появлялись при вводе /."""
+    commands = [
+        {"name": "start", "description": "Начать работу с ботом"},
+        {"name": "каталог", "description": "Открыть каталог изделий"},
+        {"name": "корзина", "description": "Посмотреть корзину"},
+        {"name": "помощь", "description": "Как пользоваться ботом"},
+    ]
+    try:
+        response = requests.patch(
+            f"{API_URL}/me/commands",
+            headers={"Authorization": TOKEN, "Content-Type": "application/json"},
+            json={"commands": commands},
+            timeout=10,
+            verify=False
+        )
+        logger.info(f"Регистрация команд: status={response.status_code}, body={response.text}")
+    except Exception as e:
+        logger.error(f"Ошибка регистрации команд: {e}")
+
+
+# Регистрируем команды при запуске
+register_commands()
+
+
 def get_post_seq(post_id):
     """Получает seq поста через API MAX для построения ссылки."""
     try:
@@ -248,6 +274,41 @@ def send_product_card(user_id, item):
         user_id=user_id,
         text=text,
         attachments=attachments,
+        keyboard=keyboard_buttons
+    )
+
+
+# === Главное меню с кнопками типа message ===
+def send_main_menu(user_id):
+    """Отправляет главное меню с кнопками, которые отправляют текст боту."""
+    keyboard_buttons = [
+        [
+            {
+                "type": "message",
+                "text": "📋 Каталог",
+                "payload": "📋 Каталог"
+            },
+            {
+                "type": "message",
+                "text": "🛒 Корзина",
+                "payload": "🛒 Корзина"
+            }
+        ],
+        [
+            {
+                "type": "message",
+                "text": "💬 Связаться с мастером",
+                "payload": "💬 Связаться с мастером"
+            }
+        ]
+    ]
+
+    send_message(
+        user_id=user_id,
+        text=(
+            "🪵 Мастерская Игнатьевых\n\n"
+            "Выберите действие — просто нажмите кнопку:"
+        ),
         keyboard=keyboard_buttons
     )
 
@@ -522,6 +583,30 @@ def webhook():
         # Нормализуем команду: lowercase + strip
         cmd = text.lower().strip() if text else ""
 
+        # === Обработка кнопок типа message (из главного меню) ===
+        # Кнопка "📋 Каталог"
+        if text and text.strip() == "📋 Каталог":
+            show_catalog(sender_id)
+            return jsonify({"ok": True}), 200
+
+        # Кнопка "🛒 Корзина"
+        if text and text.strip() == "🛒 Корзина":
+            show_cart(sender_id)
+            return jsonify({"ok": True}), 200
+
+        # Кнопка "💬 Связаться с мастером"
+        if text and text.strip() == "💬 Связаться с мастером":
+            send_message(
+                user_id=sender_id,
+                text=(
+                    "💬 Вы можете связаться с мастером:\n\n"
+                    f"— Напишите в канал: @{CHANNEL_USERNAME}\n"
+                    "— Или закажите изделие через каталог (кнопка «Каталог»)\n"
+                    "— Мастер свяжется с вами после оформления заказа."
+                )
+            )
+            return jsonify({"ok": True}), 200
+
         # Команды каталога: /catalog, /каталог
         if cmd in ["/catalog", "/каталог"]:
             show_catalog(sender_id)
@@ -530,6 +615,21 @@ def webhook():
         # Команды корзины: /cart, /корзина
         if cmd in ["/cart", "/корзина"]:
             show_cart(sender_id)
+            return jsonify({"ok": True}), 200
+
+        # Команда помощи
+        if cmd in ["/help", "/помощь"]:
+            send_message(
+                user_id=sender_id,
+                text=(
+                    "🪵 Мастерская Игнатьевых — помощь\n\n"
+                    "📋 /каталог — открыть каталог изделий\n"
+                    "🛒 /корзина — посмотреть корзину\n"
+                    "💬 /помощь — эта справка\n\n"
+                    "Также вы можете нажимать кнопки под сообщениями бота — "
+                    "не нужно ничего писать вручную."
+                )
+            )
             return jsonify({"ok": True}), 200
 
         # === Обработка шагов оформления заказа и быстрого заказа ===
@@ -634,18 +734,15 @@ def webhook():
                     pending_replies[sender_id] = reply_data
 
         elif cmd and cmd.startswith("/start"):
-            # Приветствие + сразу показываем каталог
+            # Приветствие + главное меню с кнопками
             send_message(
                 user_id=sender_id,
                 text=(
                     "Привет! Я бот мастерской Игнатьевых. 🪵\n\n"
-                    "🛍 Напишите /каталог — чтобы открыть каталог изделий.\n"
-                    "🛒 Напишите /корзина — чтобы посмотреть корзину.\n\n"
-                    "Также я слежу за комментариями в канале и помогаю отвечать на них."
+                    "Вам не нужно ничего писать — просто нажмите кнопку ниже:"
                 )
             )
-            # Сразу показываем каталог — не нужно писать /каталог
-            show_catalog(sender_id)
+            send_main_menu(sender_id)
 
     return jsonify({"ok": True}), 200
 
