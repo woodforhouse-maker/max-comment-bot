@@ -223,8 +223,10 @@ def send_product_card(user_id, item):
     attachments = []
     if item.get("photo_url"):
         attachments.append({
-            "type": "photo",
-            "url": item["photo_url"]
+            "type": "image",
+            "payload": {
+                "url": item["photo_url"]
+            }
         })
 
     keyboard_buttons = [
@@ -379,9 +381,7 @@ def webhook():
             order_text += f"\n💰 Итого: {total} ₽\n\n"
             order_text += f"👤 Пользователь: {sender_id}"
 
-            # Уведомление мастеру
             send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
-            # Подтверждение покупателю
             send_message(
                 user_id=sender_id,
                 text=(
@@ -390,7 +390,6 @@ def webhook():
                     "Спасибо за заказ! 🪵"
                 )
             )
-            # Очищаем корзину
             user_carts[sender_id] = []
 
         # --- Кнопка "Очистить корзину" ---
