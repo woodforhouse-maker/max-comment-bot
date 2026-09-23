@@ -21,7 +21,7 @@ NOTIFY_CHAT_ID = os.environ.get("NOTIFY_CHAT_ID", "")
 API_URL = "https://platform-api2.max.ru"
 CHANNEL_USERNAME = "channel_ignatyevy"
 
-# Хранилище ожидающих ответов: {user_id: {"post_id": "...", "comment_mid": "..."}}
+# Хранилище ожидающих ответов и шагов оформления заказа
 pending_replies = {}
 
 # Мини-корзина: {user_id: [item_id, item_id, ...]}
@@ -307,7 +307,6 @@ def webhook():
                 category = categories[cat_index]
                 answer_callback(callback_id, f"Открываю: {category['name']}")
 
-                # Показываем все товары в категории
                 for item in category.get("items", []):
                     send_product_card(sender_id, item)
             else:
@@ -336,7 +335,7 @@ def webhook():
                 )
             )
 
-        # --- Кнопка "Заказать" (быстрый заказ) ---
+        # --- Кнопка "Заказать" (быстрый заказ с запросом телефона) ---
         elif payload.startswith("quick_order:") and sender_id:
             item_id = payload.split(":", 1)[1]
             item = find_item_by_id(item_id)
@@ -348,49 +347,45 @@ def webhook():
             send_message(
                 user_id=sender_id,
                 text=(
-                    f"📩 Быстрый заказ: {item['name']} ({item['price']} ₽)\n"
-                    "Мастер скоро свяжется с вами для уточнения деталей."
+                    f"📩 Быстрый заказ: {item['name']} ({item['price']} ₽)\n\n"
+                    "Напишите ваш номер телефона — мастер свяжется с вами для уточнения деталей."
                 )
             )
-            send_message(
-                user_id=NOTIFY_CHAT_ID,
-                text=(
-                    f"📩 Новый быстрый заказ!\n"
-                    f"Товар: {item['name']}\n"
-                    f"Цена: {item['price']} ₽\n"
-                    f"Пользователь: {sender_id}"
-                )
-            )
+            # Сохраняем состояние: ждём телефон для быстрого заказа
+            pending_replies[sender_id] = {
+                "step": "waiting_phone_quick",
+                "item": item
+            }
 
-        # --- Кнопка "Оформить заказ" ---
-        elif payload == "checkout" and sender_id:
+        # --- Начало оформления заказа (из корзины) ---
+        elif payload == "start_checkout" and sender_id:
             cart = user_carts.get(sender_id, [])
             if not cart:
                 answer_callback(callback_id, "Корзина пуста")
                 return jsonify({"ok": True}), 200
 
-            answer_callback(callback_id, "Заказ оформлен!")
-
-            order_text = "🛒 Оформлен заказ!\n\nТовары:\n"
             total = 0
+            items_text = ""
             for item_id in cart:
                 item = find_item_by_id(item_id)
                 if item:
-                    order_text += f"• {item['name']} — {item['price']} ₽\n"
+                    items_text += f"• {item['name']} — {item['price']} ₽\n"
                     total += item["price"]
-            order_text += f"\n💰 Итого: {total} ₽\n\n"
-            order_text += f"👤 Пользователь: {sender_id}"
 
-            send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
+            answer_callback(callback_id, "Начинаем оформление")
             send_message(
                 user_id=sender_id,
                 text=(
-                    "✅ Ваш заказ оформлен!\n"
-                    "Мастер скоро свяжется с вами для уточнения деталей.\n\n"
-                    "Спасибо за заказ! 🪵"
+                    f"🛒 Оформляем заказ:\n\n{items_text}"
+                    f"💰 Итого: {total} ₽\n\n"
+                    "Напишите, пожалуйста, ваше имя:"
                 )
             )
-            user_carts[sender_id] = []
+            pending_replies[sender_id] = {
+                "step": "waiting_name",
+                "cart": cart,
+                "total": total
+            }
 
         # --- Кнопка "Очистить корзину" ---
         elif payload == "clear_cart" and sender_id:
@@ -510,7 +505,7 @@ def webhook():
                     {
                         "type": "callback",
                         "text": "✅ Оформить заказ",
-                        "payload": "checkout"
+                        "payload": "start_checkout"
                     },
                     {
                         "type": "callback",
@@ -523,19 +518,106 @@ def webhook():
             send_message(user_id=sender_id, text=cart_text, keyboard=keyboard_buttons)
             return jsonify({"ok": True}), 200
 
-        # Проверяем, есть ли ожидающий ответ от этого пользователя
+        # === Обработка шагов оформления заказа и быстрого заказа ===
+        if sender_id in pending_replies:
+            state = pending_replies.get(sender_id)
+            step = state.get("step") if isinstance(state, dict) else None
+
+            # Шаг 1: ждём имя (оформление из корзины)
+            if step == "waiting_name":
+                name = text.strip()
+                if not name:
+                    send_message(user_id=sender_id, text="Пожалуйста, напишите имя:")
+                    return jsonify({"ok": True}), 200
+
+                pending_replies[sender_id]["name"] = name
+                pending_replies[sender_id]["step"] = "waiting_phone"
+                send_message(
+                    user_id=sender_id,
+                    text=f"{name}, спасибо! Теперь напишите ваш номер телефона (можно в любом формате):"
+                )
+                return jsonify({"ok": True}), 200
+
+            # Шаг 2: ждём телефон (оформление из корзины)
+            elif step == "waiting_phone":
+                phone = text.strip()
+                if not phone:
+                    send_message(user_id=sender_id, text="Пожалуйста, напишите номер телефона:")
+                    return jsonify({"ok": True}), 200
+
+                state = pending_replies.pop(sender_id)
+                cart = state.get("cart", [])
+                total = state.get("total", 0)
+                name = state.get("name", "Не указано")
+
+                order_text = (
+                    f"📩 Новый заказ!\n"
+                    f"Имя: {name}\n"
+                    f"Телефон: {phone}\n"
+                    f"Товары:\n"
+                )
+                for item_id in cart:
+                    item = find_item_by_id(item_id)
+                    if item:
+                        order_text += f"• {item['name']} — {item['price']} ₽\n"
+
+                order_text += f"\n💰 Итого: {total} ₽"
+
+                send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
+                send_message(
+                    user_id=sender_id,
+                    text=(
+                        "✅ Спасибо за заказ!\n"
+                        "Мастер свяжется с вами в ближайшее время.\n\n"
+                        "Если нужно что-то изменить — напишите /cart."
+                    )
+                )
+
+                user_carts[sender_id] = []
+                return jsonify({"ok": True}), 200
+
+            # Шаг: ждём телефон (быстрый заказ)
+            elif step == "waiting_phone_quick":
+                phone = text.strip()
+                if not phone:
+                    send_message(user_id=sender_id, text="Пожалуйста, напишите номер телефона:")
+                    return jsonify({"ok": True}), 200
+
+                state = pending_replies.pop(sender_id)
+                item = state.get("item")
+
+                order_text = (
+                    f"📩 Быстрый заказ!\n"
+                    f"Товар: {item['name']}\n"
+                    f"Цена: {item['price']} ₽\n"
+                    f"Телефон: {phone}"
+                )
+
+                send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
+                send_message(
+                    user_id=sender_id,
+                    text=(
+                        "✅ Спасибо! Мастер свяжется с вами в ближайшее время.\n"
+                        "Если нужно что-то изменить — напишите /catalog."
+                    )
+                )
+                return jsonify({"ok": True}), 200
+
+        # Проверяем, есть ли ожидающий ответ на комментарий
         if sender_id in pending_replies and text and not text.startswith("/"):
-            reply_data = pending_replies.pop(sender_id)
-            post_id = reply_data["post_id"]
-            comment_mid = reply_data["comment_mid"]
+            reply_data = pending_replies.get(sender_id)
+            if isinstance(reply_data, dict) and "post_id" in reply_data:
+                reply_data = pending_replies.pop(sender_id)
+                post_id = reply_data["post_id"]
+                comment_mid = reply_data["comment_mid"]
 
-            success = post_comment(post_id, text, reply_to_mid=comment_mid)
+                success = post_comment(post_id, text, reply_to_mid=comment_mid)
 
-            if success:
-                send_message(user_id=sender_id, text="✅ Ответ отправлен в канал!")
-            else:
-                send_message(user_id=sender_id, text="❌ Не удалось отправить ответ. Проверьте, что бот — администратор канала с правом write.")
-                pending_replies[sender_id] = reply_data
+                if success:
+                    send_message(user_id=sender_id, text="✅ Ответ отправлен в канал!")
+                else:
+                    send_message(user_id=sender_id, text="❌ Не удалось отправить ответ. Проверьте, что бот — администратор канала с правом write.")
+                    pending_replies[sender_id] = reply_data
 
         elif text and text.lower().startswith("/start"):
             send_message(
