@@ -747,7 +747,7 @@ def webhook():
     return jsonify({"ok": True}), 200
 
 
-@app.route("/", methods=["["GET"])
+@app.route("/", methods=["GET"])
 def index():
     return "Бот работает!", 200
 
