@@ -233,7 +233,7 @@ def send_product_card(user_id, item):
         [
             {
                 "type": "callback",
-                "text": "🛒 Добавить в корзину",
+                "text": "🛒 В корзину",
                 "payload": f"add_to_cart:{item['id']}"
             },
             {
@@ -250,6 +250,70 @@ def send_product_card(user_id, item):
         attachments=attachments,
         keyboard=keyboard_buttons
     )
+
+
+# === Показ каталога (категории кнопками) ===
+def show_catalog(user_id):
+    """Показывает категории каталога кнопками."""
+    categories = CATALOG_DATA.get("categories", [])
+    if not categories:
+        send_message(user_id=user_id, text="Каталог пока пуст.")
+        return
+
+    buttons = []
+    row = []
+    for i, cat in enumerate(categories):
+        row.append({
+            "type": "callback",
+            "text": f"📦 {cat['name']}",
+            "payload": f"show_category:{i}"
+        })
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+
+    send_message(
+        user_id=user_id,
+        text="🛠 Каталог мастерской Игнатьевых\nВыберите категорию:",
+        keyboard=buttons
+    )
+
+
+# === Показ корзины ===
+def show_cart(user_id):
+    """Показывает содержимое корзины с кнопками."""
+    cart = user_carts.get(user_id, [])
+    if not cart:
+        send_message(user_id=user_id, text="🛒 Ваша корзина пуста.")
+        return
+
+    cart_text = "🛒 Ваша корзина:\n\n"
+    total = 0
+    for item_id in cart:
+        item = find_item_by_id(item_id)
+        if item:
+            cart_text += f"• {item['name']} — {item['price']} ₽\n"
+            total += item["price"]
+    cart_text += f"\n💰 Итого: {total} ₽\n\n"
+
+    keyboard_buttons = [
+        [
+            {
+                "type": "callback",
+                "text": "✅ Оформить заказ",
+                "payload": "start_checkout"
+            },
+            {
+                "type": "callback",
+                "text": "🗑 Очистить",
+                "payload": "clear_cart"
+            }
+        ]
+    ]
+
+    send_message(user_id=user_id, text=cart_text, keyboard=keyboard_buttons)
 
 
 @app.route("/webhook", methods=["POST", "GET"])
@@ -281,7 +345,7 @@ def webhook():
 
         logger.info(f"Callback от user_id={sender_id}, payload={payload}, callback_id={callback_id}")
 
-        # --- Кнопка "Ответить" (старый функционал) ---
+        # --- Кнопка "Ответить" ---
         if payload.startswith("reply:") and sender_id:
             parts = payload.split(":", 2)
             if len(parts) == 3:
@@ -312,7 +376,7 @@ def webhook():
             else:
                 answer_callback(callback_id, "Категория не найдена")
 
-        # --- Кнопка "Добавить в корзину" ---
+        # --- Кнопка "В корзину" ---
         elif payload.startswith("add_to_cart:") and sender_id:
             item_id = payload.split(":", 1)[1]
             item = find_item_by_id(item_id)
@@ -324,14 +388,14 @@ def webhook():
                 user_carts[sender_id] = []
             user_carts[sender_id].append(item_id)
 
-            answer_callback(callback_id, "✅ Товар добавлен в корзину!")
+            answer_callback(callback_id, "✅ Добавлено в корзину!")
             count = len(user_carts[sender_id])
             send_message(
                 user_id=sender_id,
                 text=(
                     f"🛒 «{item['name']}» добавлен в корзину.\n"
                     f"В корзине товаров: {count}\n\n"
-                    f"Напишите /cart, чтобы посмотреть корзину."
+                    f"Напишите /корзина, чтобы посмотреть корзину."
                 )
             )
 
@@ -351,7 +415,6 @@ def webhook():
                     "Напишите ваш номер телефона — мастер свяжется с вами для уточнения деталей."
                 )
             )
-            # Сохраняем состояние: ждём телефон для быстрого заказа
             pending_replies[sender_id] = {
                 "step": "waiting_phone_quick",
                 "item": item
@@ -387,7 +450,7 @@ def webhook():
                 "total": total
             }
 
-        # --- Кнопка "Очистить корзину" ---
+        # --- Кнопка "Очистить" ---
         elif payload == "clear_cart" and sender_id:
             user_carts[sender_id] = []
             answer_callback(callback_id, "Корзина очищена")
@@ -456,66 +519,17 @@ def webhook():
 
         logger.info(f"Сообщение от user_id={sender_id}: {text}")
 
-        # Команда /catalog — показать каталог
-        if text and text.lower().strip() == "/catalog":
-            categories = CATALOG_DATA.get("categories", [])
-            if not categories:
-                send_message(user_id=sender_id, text="Каталог пока пуст.")
-                return jsonify({"ok": True}), 200
+        # Нормализуем команду: lowercase + strip
+        cmd = text.lower().strip() if text else ""
 
-            buttons = []
-            row = []
-            for i, cat in enumerate(categories):
-                row.append({
-                    "type": "callback",
-                    "text": f"📦 {cat['name']}",
-                    "payload": f"show_category:{i}"
-                })
-                if len(row) == 2:
-                    buttons.append(row)
-                    row = []
-            if row:
-                buttons.append(row)
-
-            send_message(
-                user_id=sender_id,
-                text="🛠 Каталог мастерской Игнатьевых\nВыберите категорию:",
-                keyboard=buttons
-            )
+        # Команды каталога: /catalog, /каталог
+        if cmd in ["/catalog", "/каталог"]:
+            show_catalog(sender_id)
             return jsonify({"ok": True}), 200
 
-        # Команда /cart — показать корзину
-        if text and text.lower().strip() == "/cart":
-            cart = user_carts.get(sender_id, [])
-            if not cart:
-                send_message(user_id=sender_id, text="🛒 Ваша корзина пуста.")
-                return jsonify({"ok": True}), 200
-
-            cart_text = "🛒 Ваша корзина:\n\n"
-            total = 0
-            for item_id in cart:
-                item = find_item_by_id(item_id)
-                if item:
-                    cart_text += f"• {item['name']} — {item['price']} ₽\n"
-                    total += item["price"]
-            cart_text += f"\n💰 Итого: {total} ₽\n\n"
-
-            keyboard_buttons = [
-                [
-                    {
-                        "type": "callback",
-                        "text": "✅ Оформить заказ",
-                        "payload": "start_checkout"
-                    },
-                    {
-                        "type": "callback",
-                        "text": "🗑 Очистить корзину",
-                        "payload": "clear_cart"
-                    }
-                ]
-            ]
-
-            send_message(user_id=sender_id, text=cart_text, keyboard=keyboard_buttons)
+        # Команды корзины: /cart, /корзина
+        if cmd in ["/cart", "/корзина"]:
+            show_cart(sender_id)
             return jsonify({"ok": True}), 200
 
         # === Обработка шагов оформления заказа и быстрого заказа ===
@@ -569,7 +583,7 @@ def webhook():
                     text=(
                         "✅ Спасибо за заказ!\n"
                         "Мастер свяжется с вами в ближайшее время.\n\n"
-                        "Если нужно что-то изменить — напишите /cart."
+                        "Если нужно что-то изменить — напишите /корзина."
                     )
                 )
 
@@ -598,7 +612,7 @@ def webhook():
                     user_id=sender_id,
                     text=(
                         "✅ Спасибо! Мастер свяжется с вами в ближайшее время.\n"
-                        "Если нужно что-то изменить — напишите /catalog."
+                        "Если нужно что-то изменить — напишите /каталог."
                     )
                 )
                 return jsonify({"ok": True}), 200
@@ -619,16 +633,19 @@ def webhook():
                     send_message(user_id=sender_id, text="❌ Не удалось отправить ответ. Проверьте, что бот — администратор канала с правом write.")
                     pending_replies[sender_id] = reply_data
 
-        elif text and text.lower().startswith("/start"):
+        elif cmd and cmd.startswith("/start"):
+            # Приветствие + сразу показываем каталог
             send_message(
                 user_id=sender_id,
                 text=(
                     "Привет! Я бот мастерской Игнатьевых. 🪵\n\n"
-                    "🛍 Напишите /catalog — чтобы открыть каталог изделий.\n"
-                    "🛒 Напишите /cart — чтобы посмотреть корзину.\n\n"
+                    "🛍 Напишите /каталог — чтобы открыть каталог изделий.\n"
+                    "🛒 Напишите /корзина — чтобы посмотреть корзину.\n\n"
                     "Также я слежу за комментариями в канале и помогаю отвечать на них."
                 )
             )
+            # Сразу показываем каталог — не нужно писать /каталог
+            show_catalog(sender_id)
 
     return jsonify({"ok": True}), 200
 
