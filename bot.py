@@ -256,7 +256,7 @@ def send_product_card(user_id, item):
         f"\U0001FA91 \"{item['name']}\"\n"
         f"\U0001F4B0 Цена: {item['price']} руб.\n"
         f"\U0001F4DD {item['description']}\n\n"
-        f"\U0001F447 Выберите действие \U0001F447"
+        f"\U0001F447Выберите действие\U0001F447"
     )
     attachments = []
     if item.get("photo_url"):
@@ -283,11 +283,11 @@ def send_main_menu(user_id):
             {"type": "message", "text": "\U0001F6D2 Корзина", "payload": "\U0001F6D2 Корзина"}
         ],
         [
-            {"type": "message", "text": "\U0001F4DE Связаться с мастером", "payload": "\U0001F4DE Связаться с мастером"},
+            {"type": "message", "text": "\U0001F4DE Мастер", "payload": "\U0001F4DE Мастер"},
             {"type": "message", "text": "\u2753 Задать вопрос", "payload": "\u2753 Задать вопрос"}
         ]
     ]
-    send_message(user_id=user_id, text="\U0001F447 Выберите действие \U0001F447", keyboard=keyboard_buttons)
+    send_message(user_id=user_id, text="\U0001F447Выберите действие\U0001F447", keyboard=keyboard_buttons)
 
 
 def show_catalog(user_id):
@@ -304,13 +304,13 @@ def show_catalog(user_id):
             row = []
     if row:
         buttons.append(row)
-    send_message(user_id=user_id, text="\U0001F6E0 Каталог мастерской Игнатьевых\n\n\U0001F447 Выберите категорию \U0001F447", keyboard=buttons)
+    send_message(user_id=user_id, text="\U0001F6E0 Каталог мастерской Игнатьевых\n\nВыберите категорию:", keyboard=buttons)
 
 
 def show_cart(user_id):
     cart = user_carts.get(user_id, [])
     if not cart:
-        send_message(user_id=user_id, text="\U0001F6D2 Ваша корзина пуста.\n\n\U0001F447 Откройте «\U0001F4CB Каталог» и выберите изделие \U0001F447")
+        send_message(user_id=user_id, text="\U0001F6D2 Ваша корзина пуста.\n\n\U0001F449 Откройте \u00ab\U0001F4CB Каталог\u00bb — выберите изделие!")
         return
     cart_text = "\U0001F6D2 Ваша корзина:\n\n"
     total = 0
@@ -320,14 +320,13 @@ def show_cart(user_id):
             cart_text += f"\u2022 \"{item['name']}\" — {item['price']} руб.\n"
             total += item["price"]
     cart_text += f"\n\U0001F4B0 Итого: {total} руб.\n\n"
-    cart_text += f"\U0001F447 Чтобы продолжить, нажмите кнопку \U0001F447"
     keyboard_buttons = [
         [
             {"type": "callback", "text": "\u2705 Оформить заказ", "payload": "start_checkout"},
             {"type": "callback", "text": "\U0001F5D1 Очистить", "payload": "clear_cart"}
         ]
     ]
-    send_message(user_id=user_id, text=cart_text, keyboard=keyboard_buttons)
+    send_message(user_id=user_id, text=cart_text + "\U0001F447Чтобы продолжить, нажмите кнопку\U0001F447", keyboard=keyboard_buttons)
 
 
 @app.route("/webhook", methods=["POST", "GET"])
@@ -352,27 +351,37 @@ def webhook():
         chat_id = data.get("chat_id")
         sender_id = data.get("user", {}).get("user_id")
         logger.info(f"bot_started: chat_id={chat_id}, user_id={sender_id}, data={json.dumps(data, ensure_ascii=False)}")
-        welcome_text = (
-            "Привет! Я бот мастерской Игнатьевых. \U0001FAB5\n\n"
-            "Здесь вы можете посмотреть каталог изделий, "
-            "собрать корзину и оформить заказ.\n\n"
-            "\U0001F447 Просто нажмите кнопку \U0001F447"
-        )
         if chat_id:
-            send_message(chat_id=chat_id, text=welcome_text)
+            send_message(
+                chat_id=chat_id,
+                text=(
+                    "Привет! Я бот мастерской Игнатьевых. \U0001FAB5\n\n"
+                    "Здесь вы можете посмотреть каталог изделий, "
+                    "собрать корзину и оформить заказ.\n\n"
+                    "Вам не нужно ничего писать — просто нажмите кнопку:"
+                )
+            )
             keyboard_buttons = [
                 [
                     {"type": "message", "text": "\U0001F4CB Каталог", "payload": "\U0001F4CB Каталог"},
                     {"type": "message", "text": "\U0001F6D2 Корзина", "payload": "\U0001F6D2 Корзина"}
                 ],
                 [
-                    {"type": "message", "text": "\U0001F4DE Связаться с мастером", "payload": "\U0001F4DE Связаться с мастером"},
+                    {"type": "message", "text": "\U0001F4DE Мастер", "payload": "\U0001F4DE Мастер"},
                     {"type": "message", "text": "\u2753 Задать вопрос", "payload": "\u2753 Задать вопрос"}
                 ]
             ]
-            send_message(chat_id=chat_id, text="\U0001F447 Выберите действие \U0001F447", keyboard=keyboard_buttons)
+            send_message(chat_id=chat_id, text="\U0001F447Выберите действие\U0001F447", keyboard=keyboard_buttons)
         elif sender_id:
-            send_message(user_id=sender_id, text=welcome_text)
+            send_message(
+                user_id=sender_id,
+                text=(
+                    "Привет! Я бот мастерской Игнатьевых. \U0001FAB5\n\n"
+                    "Здесь вы можете посмотреть каталог изделий, "
+                    "собрать корзину и оформить заказ.\n\n"
+                    "Вам не нужно ничего писать — просто нажмите кнопку:"
+                )
+            )
             send_main_menu(sender_id)
         return jsonify({"ok": True}), 200
 
@@ -424,7 +433,7 @@ def webhook():
             user_carts[sender_id].append(item_id)
             answer_callback(callback_id, "\u2705 Добавлено в корзину!")
             count = len(user_carts[sender_id])
-            send_message(user_id=sender_id, text=f"\u2705 \"{item['name']}\" добавлен в корзину.\n\nВ корзине товаров: {count}\n\n\U0001F447 Нажмите «\U0001F6D2 Корзина», чтобы оформить заказ \U0001F447")
+            send_message(user_id=sender_id, text=f"\U0001F6D2 \u00ab{item['name']}\u00bb добавлен в корзину.\nВ корзине товаров: {count}\n\n\U0001F449 Нажмите \u00ab\U0001F6D2 Корзина\u00bb, чтобы оформить заказ.")
             return jsonify({"ok": True}), 200
 
         elif payload.startswith("quick_order:") and sender_id:
@@ -434,8 +443,8 @@ def webhook():
                 answer_callback(callback_id, "Товар не найден")
                 return jsonify({"ok": True}), 200
             answer_callback(callback_id, "Принято!")
-            send_message(user_id=sender_id, text=f"\U0001F4D8 Быстрый заказ: \"{item['name']}\" (Цена: {item['price']} руб.)\n\n\U0001F4DE Напишите ваш номер телефона \U0001F4DE\nМастер свяжется с вами для уточнения деталей.")
-            pending_replies[sender_id] = {"step": "waiting_phone_quick", "item": item}
+            send_message(user_id=sender_id, text=f"\U0001F4D8 Быстрый заказ: \"{item['name']}\" (Цена: {item['price']} руб.)\n\nЧтобы мастер связался с вами \U0001F4A1\n\U0001F4DD Напишите, как вас зовут и номер вашего телефона (в любом формате)")
+            pending_replies[sender_id] = {"step": "waiting_contact_quick", "item": item}
             return jsonify({"ok": True}), 200
 
         elif payload.startswith("ask_question:") and sender_id:
@@ -445,7 +454,7 @@ def webhook():
             answer_callback(callback_id, "Напишите вопрос")
             send_message(
                 user_id=sender_id,
-                text=f"\U0001F4AC Напишите ваш вопрос про \"{item_name}\"\n\n\U0001F551 Мастер ответит в течение 30 минут"
+                text=f"\U0001F4AC Напишите ваш вопрос про \"{item_name}\"\n\nМастер увидит его сразу и ответит в течение 30 минут."
             )
             pending_replies[sender_id] = {"step": "waiting_question", "item_id": item_id, "item_name": item_name}
             return jsonify({"ok": True}), 200
@@ -463,14 +472,14 @@ def webhook():
                     items_text += f"\u2022 \"{item['name']}\" — {item['price']} руб.\n"
                     total += item["price"]
             answer_callback(callback_id, "Начинаем оформление")
-            send_message(user_id=sender_id, text=f"\U0001F6D2 Оформляем заказ:\n\n{items_text}\n\U0001F4B0 Итого: {total} руб.\n\n\U0001F4DE Напишите ваше имя \U0001F4DE")
-            pending_replies[sender_id] = {"step": "waiting_name", "cart": cart, "total": total}
+            send_message(user_id=sender_id, text=f"\U0001F6D2 Оформляем заказ:\n\n{items_text}\U0001F4B0 Итого: {total} руб.\n\n\U0001F4DD Напишите, как вас зовут и номер вашего телефона (в любом формате)")
+            pending_replies[sender_id] = {"step": "waiting_contact", "cart": cart, "total": total}
             return jsonify({"ok": True}), 200
 
         elif payload == "clear_cart" and sender_id:
             user_carts[sender_id] = []
             answer_callback(callback_id, "Корзина очищена")
-            send_message(user_id=sender_id, text="\U0001F5D1 Корзина очищена.\n\n\U0001F447 Откройте «\U0001F4CB Каталог» и выберите изделие \U0001F447")
+            send_message(user_id=sender_id, text="\U0001F5D1 Корзина очищена.\n\n\U0001F449 Откройте \u00ab\U0001F4CB Каталог\u00bb — выберите изделие!")
             return jsonify({"ok": True}), 200
 
         else:
@@ -539,15 +548,15 @@ def webhook():
             show_cart(sender_id)
             return jsonify({"ok": True}), 200
 
-        if text and text.strip() == "\U0001F4DE Связаться с мастером":
-            send_message(user_id=sender_id, text="\U0001F4DE Связаться с мастером:\n\nЕвгений\n\U0001F4DE Телефон: 8 (989) 622-37-32\n\n\U0001F447 Закажите через «\U0001F4CB Каталог» — выберите изделие \U0001F447")
+        if text and text.strip() == "\U0001F4DE Мастер":
+            send_message(user_id=sender_id, text="\U0001F4DE Мастер:\n\nЕвгений\n\u260E\uFE0F 8 (989) 622-37-32\n\n\U0001F449 Или закажите через \u00ab\U0001F4CB Каталог\u00bb")
             return jsonify({"ok": True}), 200
 
         if text and text.strip() == "\u2753 Задать вопрос":
             pending_replies[sender_id] = {"step": "waiting_question"}
             send_message(
                 user_id=sender_id,
-                text="\U0001F4AC Напишите ваш вопрос прямо здесь\n\n\U0001F551 Мастер ответит в течение 30 минут"
+                text="\U0001F4AC Напишите ваш вопрос прямо здесь.\n\nМастер увидит его сразу и ответит в течение 30 минут."
             )
             return jsonify({"ok": True}), 200
 
@@ -560,7 +569,7 @@ def webhook():
             return jsonify({"ok": True}), 200
 
         if cmd in ["/help", "/помощь"]:
-            send_message(user_id=sender_id, text="\U0001FAB5 Мастерская Игнатьевых — помощь\n\n\U0001F4CB /каталог — открыть каталог изделий\n\U0001F6D2 /корзина — посмотреть корзину\n\u2753 /помощь — эта справка\n\n\U0001F4A1 Нажимайте кнопки под сообщениями бота — не нужно ничего писать вручную")
+            send_message(user_id=sender_id, text="\U0001FAB5 Мастерская Игнатьевых — помощь\n\n\U0001F4CB /каталог — открыть каталог\n\U0001F6D2 /корзина — посмотреть корзину\n\u2753 /помощь — эта справка\n\n\U0001F4A1 Также можно нажимать кнопки под сообщениями бота.")
             return jsonify({"ok": True}), 200
 
         # Команда /вопросы — только для админа: показать активные диалоги
@@ -568,7 +577,7 @@ def webhook():
             if active_dialogs:
                 lines = []
                 for num, d in sorted(active_dialogs.items()):
-                    item_info = f" (\U0001F4E6 изделие: {d['item_name']})" if d.get("item_name") else ""
+                    item_info = f" (\U0001F4E6 {d['item_name']})" if d.get("item_name") else ""
                     preview = d['text'][:60] + ("..." if len(d['text']) > 60 else "")
                     lines.append(f"#{num} — {d['name']}{item_info}: {preview}")
                 send_message(user_id=sender_id, text="\U0001F4CB Активные диалоги:\n\n" + "\n".join(lines))
@@ -584,7 +593,7 @@ def webhook():
             if step == "waiting_question":
                 question_text = text.strip() if text else ""
                 if not question_text:
-                    send_message(user_id=sender_id, text="\U0001F4AC Пожалуйста, напишите ваш вопрос")
+                    send_message(user_id=sender_id, text="Пожалуйста, напишите ваш вопрос:")
                     return jsonify({"ok": True}), 200
                 state = pending_replies.pop(sender_id)
                 item_name = state.get("item_name")
@@ -610,24 +619,58 @@ def webhook():
                         f"\u21AA\uFE0F Чтобы ответить, напишите: {num}: ваш текст"
                     )
                 send_message(user_id=NOTIFY_CHAT_ID, text=forward_text)
-                send_message(user_id=sender_id, text="\u2705 Вопрос передан мастеру!\n\n\U0001F551 Ответим в течение 30 минут")
+                send_message(user_id=sender_id, text="\u2705 Спасибо, вопрос передан мастеру!\n\n\u23F1\uFE0F Ответим в течение 30 минут.")
                 logger.info(f"Вопрос #{num} от {first_name} (user_id={sender_id}): {question_text}")
                 return jsonify({"ok": True}), 200
 
+            elif step == "waiting_contact":
+                # Оформление заказа из корзины: клиент пишет имя и телефон в одном сообщении
+                contact_text = text.strip() if text else ""
+                if not contact_text:
+                    send_message(user_id=sender_id, text="\U0001F4DD Напишите, как вас зовут и номер вашего телефона (в любом формате)")
+                    return jsonify({"ok": True}), 200
+                state = pending_replies.pop(sender_id)
+                cart = state.get("cart", [])
+                total = state.get("total", 0)
+                order_text = f"\U0001F4D8 Новый заказ!\n\nИмя и телефон: {contact_text}\nТовары:\n"
+                for item_id in cart:
+                    item = find_item_by_id(item_id)
+                    if item:
+                        order_text += f"\u2022 \"{item['name']}\" — {item['price']} руб.\n"
+                order_text += f"\n\U0001F4B0 Итого: {total} руб."
+                send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
+                send_message(user_id=sender_id, text="\u2705 Спасибо за заказ!\n\nМастер свяжется с вами в ближайшее время.\n\n\U0001F449 Если нужно что-то изменить — нажмите \u00ab\U0001F6D2 Корзина\u00bb")
+                user_carts[sender_id] = []
+                return jsonify({"ok": True}), 200
+
+            elif step == "waiting_contact_quick":
+                # Быстрый заказ: клиент пишет имя и телефон в одном сообщении
+                contact_text = text.strip() if text else ""
+                if not contact_text:
+                    send_message(user_id=sender_id, text="\U0001F4DD Напишите, как вас зовут и номер вашего телефона (в любом формате)")
+                    return jsonify({"ok": True}), 200
+                state = pending_replies.pop(sender_id)
+                item = state.get("item")
+                order_text = f"\U0001F4D8 Быстрый заказ!\n\nТовар: \"{item['name']}\"\nЦена: {item['price']} руб.\nИмя и телефон: {contact_text}"
+                send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
+                send_message(user_id=sender_id, text="\u2705 Спасибо! Мастер свяжется с вами в ближайшее время.\n\n\U0001F449 Если нужно что-то изменить — откройте \u00ab\U0001F4CB Каталог\u00bb")
+                return jsonify({"ok": True}), 200
+
+            # Совместимость со старыми шагами (на случай если у кого-то завис pending_replies)
             elif step == "waiting_name":
                 name = text.strip()
                 if not name:
-                    send_message(user_id=sender_id, text="\U0001F4DE Пожалуйста, напишите ваше имя \U0001F4DE")
+                    send_message(user_id=sender_id, text="Пожалуйста, напишите имя:")
                     return jsonify({"ok": True}), 200
                 pending_replies[sender_id]["name"] = name
                 pending_replies[sender_id]["step"] = "waiting_phone"
-                send_message(user_id=sender_id, text=f"\u2705 {name}, спасибо!\n\n\U0001F4DE Напишите ваш номер телефона \U0001F4DE\nМожно в любом формате")
+                send_message(user_id=sender_id, text=f"{name}, спасибо! \U0001F4DE Напишите ваш номер телефона (в любом формате)")
                 return jsonify({"ok": True}), 200
 
             elif step == "waiting_phone":
                 phone = text.strip()
                 if not phone:
-                    send_message(user_id=sender_id, text="\U0001F4DE Пожалуйста, напишите номер телефона \U0001F4DE")
+                    send_message(user_id=sender_id, text="Пожалуйста, напишите номер телефона:")
                     return jsonify({"ok": True}), 200
                 state = pending_replies.pop(sender_id)
                 cart = state.get("cart", [])
@@ -640,20 +683,20 @@ def webhook():
                         order_text += f"\u2022 \"{item['name']}\" — {item['price']} руб.\n"
                 order_text += f"\n\U0001F4B0 Итого: {total} руб."
                 send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
-                send_message(user_id=sender_id, text="\u2705 Спасибо за заказ!\n\nМастер свяжется с вами в ближайшее время.\n\n\U0001F447 Если нужно что-то изменить — нажмите «\U0001F6D2 Корзина» \U0001F447")
+                send_message(user_id=sender_id, text="\u2705 Спасибо за заказ!\n\nМастер свяжется с вами в ближайшее время.\n\n\U0001F449 Если нужно что-то изменить — нажмите \u00ab\U0001F6D2 Корзина\u00bb")
                 user_carts[sender_id] = []
                 return jsonify({"ok": True}), 200
 
             elif step == "waiting_phone_quick":
                 phone = text.strip()
                 if not phone:
-                    send_message(user_id=sender_id, text="\U0001F4DE Пожалуйста, напишите номер телефона \U0001F4DE")
+                    send_message(user_id=sender_id, text="Пожалуйста, напишите номер телефона:")
                     return jsonify({"ok": True}), 200
                 state = pending_replies.pop(sender_id)
                 item = state.get("item")
                 order_text = f"\U0001F4D8 Быстрый заказ!\nТовар: \"{item['name']}\"\nЦена: {item['price']} руб.\nТелефон: {phone}"
                 send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
-                send_message(user_id=sender_id, text="\u2705 Спасибо! Мастер свяжется с вами в ближайшее время.\n\n\U0001F447 Если нужно что-то изменить — нажмите «\U0001F4CB Каталог» \U0001F447")
+                send_message(user_id=sender_id, text="\u2705 Спасибо! Мастер свяжется с вами в ближайшее время.\n\n\U0001F449 Если нужно что-то изменить — откройте \u00ab\U0001F4CB Каталог\u00bb")
                 return jsonify({"ok": True}), 200
 
         # Проверяем, есть ли ожидающий ответ на комментарий
@@ -672,7 +715,7 @@ def webhook():
             return jsonify({"ok": True}), 200
 
         elif cmd and cmd.startswith("/start"):
-            send_message(user_id=sender_id, text="Привет! Я бот мастерской Игнатьевых. \U0001FAB5\n\nЗдесь вы можете посмотреть каталог изделий, собрать корзину и оформить заказ.\n\n\U0001F447 Просто нажмите кнопку \U0001F447")
+            send_message(user_id=sender_id, text="Привет! Я бот мастерской Игнатьевых. \U0001FAB5\n\nЗдесь вы можете посмотреть каталог изделий, собрать корзину и оформить заказ.\n\nВам не нужно ничего писать — просто нажмите кнопку:")
             send_main_menu(sender_id)
             return jsonify({"ok": True}), 200
 
