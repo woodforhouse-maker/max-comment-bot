@@ -319,6 +319,34 @@ def build_main_menu_keyboard():
     ]
 
 
+def build_catalog_keyboard():
+    """Кнопка «Каталог» — для сообщений, где нужно направить пользователя в каталог."""
+    return [
+        [
+            {"type": "message", "text": "\U0001F4CB Каталог", "payload": "\U0001F4CB Каталог"},
+        ],
+    ]
+
+
+def build_cart_catalog_keyboard():
+    """Кнопки «Корзина» + «Каталог» — после добавления товара в корзину."""
+    return [
+        [
+            {"type": "message", "text": "\U0001F6D2 Корзина", "payload": "\U0001F6D2 Корзина"},
+            {"type": "message", "text": "\U0001F4CB Каталог", "payload": "\U0001F4CB Каталог"},
+        ],
+    ]
+
+
+def build_cancel_keyboard():
+    """Кнопка «Отмена» — для шагов, где от пользователя требуется текстовый ввод."""
+    return [
+        [
+            {"type": "message", "text": "\u274C Отмена", "payload": "\u274C Отмена"},
+        ],
+    ]
+
+
 def send_welcome(target_id, is_chat=False):
     text = (
         "Привет! Я бот мастерской Игнатьевых. \U0001FAB5\n\n"
@@ -402,7 +430,11 @@ def show_catalog(user_id):
 def show_cart(user_id):
     cart = user_carts.get(str(user_id), [])
     if not cart:
-        send_message(user_id=user_id, text="\U0001F6D2 Ваша корзина пуста.\n\n\U0001F449 Откройте \u00ab\U0001F4CB Каталог\u00bb — выберите изделие!")
+        send_message(
+            user_id=user_id,
+            text="\U0001F6D2 Ваша корзина пуста.\n\n\U0001F447Выберите действие\U0001F447",
+            keyboard=build_catalog_keyboard(),
+        )
         return
     cart_text = "\U0001F6D2 Ваша корзина:\n\n"
     total = 0
@@ -465,7 +497,11 @@ def handle_callback(data):
                 }
                 save_state()
             answer_callback(callback_id, "\u270D\uFE0F Напишите ответ — бот отправит его как комментарий")
-            send_message(user_id=sender_id, text="\u270D\uFE0F Напишите ответ следующим сообщением — бот отправит его как комментарий-ответ.")
+            send_message(
+                user_id=sender_id,
+                text="\u270D\uFE0F Напишите ответ следующим сообщением — бот отправит его как комментарий-ответ.",
+                keyboard=build_cancel_keyboard(),
+            )
         else:
             answer_callback(callback_id, "Ошибка: неверный формат")
         return jsonify({"ok": True}), 200
@@ -497,7 +533,11 @@ def handle_callback(data):
             save_state()
         answer_callback(callback_id, "\u2705 Добавлено в корзину!")
         count = len(user_carts[sender_id])
-        send_message(user_id=sender_id, text=f"\U0001F6D2 \u00ab{item['name']}\u00bb добавлен в корзину.\nВ корзине товаров: {count}\n\n\U0001F449 Нажмите \u00ab\U0001F6D2 Корзина\u00bb, чтобы оформить заказ.")
+        send_message(
+            user_id=sender_id,
+            text=f"\U0001F6D2 \u00ab{item['name']}\u00bb добавлен в корзину.\nВ корзине товаров: {count}\n\n\U0001F447Выберите действие\U0001F447",
+            keyboard=build_cart_catalog_keyboard(),
+        )
         return jsonify({"ok": True}), 200
 
     # --- quick_order:<item_id> ---
@@ -508,7 +548,11 @@ def handle_callback(data):
             answer_callback(callback_id, "Товар не найден")
             return jsonify({"ok": True}), 200
         answer_callback(callback_id, "Принято!")
-        send_message(user_id=sender_id, text=f"\U0001F4D8 Быстрый заказ: \"{item['name']}\" (Цена: {item['price']} руб.)\n\nЧтобы мастер связался с вами \U0001F4A1\n\U0001F4DD Напишите, как вас зовут и номер вашего телефона (в любом формате)")
+        send_message(
+            user_id=sender_id,
+            text=f"\U0001F4D8 Быстрый заказ: \"{item['name']}\" (Цена: {item['price']} руб.)\n\nЧтобы мастер связался с вами \U0001F4A1\n\U0001F4DD Напишите, как вас зовут и номер вашего телефона (в любом формате)",
+            keyboard=build_cancel_keyboard(),
+        )
         with _lock:
             pending_replies[sender_id] = {
                 "step": "waiting_contact_quick",
@@ -525,7 +569,11 @@ def handle_callback(data):
         item = find_item_by_id(item_id)
         item_name = item["name"] if item else "изделие"
         answer_callback(callback_id, "Напишите вопрос")
-        send_message(user_id=sender_id, text=f"\U0001F4AC Напишите ваш вопрос про \"{item_name}\"\n\nМастер увидит его сразу и ответит в течение 30 минут.")
+        send_message(
+            user_id=sender_id,
+            text=f"\U0001F4AC Напишите ваш вопрос про \"{item_name}\"\n\nМастер увидит его сразу и ответит в течение 30 минут.",
+            keyboard=build_cancel_keyboard(),
+        )
         with _lock:
             pending_replies[sender_id] = {
                 "step": "waiting_question",
@@ -550,7 +598,11 @@ def handle_callback(data):
                 items_text += f"\u2022 \"{item['name']}\" — {item['price']} руб.\n"
                 total += item["price"]
         answer_callback(callback_id, "Начинаем оформление")
-        send_message(user_id=sender_id, text=f"\U0001F6D2 Оформляем заказ:\n\n{items_text}\U0001F4B0 Итого: {total} руб.\n\n\U0001F4DD Напишите, как вас зовут и номер вашего телефона (в любом формате)")
+        send_message(
+            user_id=sender_id,
+            text=f"\U0001F6D2 Оформляем заказ:\n\n{items_text}\U0001F4B0 Итого: {total} руб.\n\n\U0001F4DD Напишите, как вас зовут и номер вашего телефона (в любом формате)",
+            keyboard=build_cancel_keyboard(),
+        )
         with _lock:
             pending_replies[sender_id] = {
                 "step": "waiting_contact",
@@ -567,7 +619,11 @@ def handle_callback(data):
             user_carts[sender_id] = []
             save_state()
         answer_callback(callback_id, "Корзина очищена")
-        send_message(user_id=sender_id, text="\U0001F5D1 Корзина очищена.\n\n\U0001F449 Откройте \u00ab\U0001F4CB Каталог\u00bb — выберите изделие!")
+        send_message(
+            user_id=sender_id,
+            text="\U0001F5D1 Корзина очищена.\n\n\U0001F447Выберите действие\U0001F447",
+            keyboard=build_catalog_keyboard(),
+        )
         return jsonify({"ok": True}), 200
 
     answer_callback(callback_id, "Ок")
@@ -584,7 +640,7 @@ def handle_admin_reply(sender_id, text):
         reply_text = match.group(2).strip()
         if num in active_dialogs:
             client_user_id = active_dialogs[num]["user_id"]
-            send_message(user_id=client_user_id, text=reply_text)
+            send_message(user_id=client_user_id, text=reply_text, keyboard=build_main_menu_keyboard())
             send_message(user_id=sender_id, text=f"\u2705 Ответ #{num} отправлен клиенту.")
             logger.info(f"Ответ #{num} отправлен user_id={client_user_id}")
             with _lock:
@@ -612,13 +668,21 @@ def handle_pending_state(sender_id, text):
         with _lock:
             del pending_replies[sender_id]
             save_state()
-        send_message(user_id=sender_id, text="\u23F1\uFE0F Время ожидания истекло. Начните заново.")
+        send_message(
+            user_id=sender_id,
+            text="\u23F1\uFE0F Время ожидания истекло. Начните заново.\n\n\U0001F447Выберите действие\U0001F447",
+            keyboard=build_main_menu_keyboard(),
+        )
         return True
 
     if step == "waiting_question":
         question_text = (text or "").strip()
         if not question_text:
-            send_message(user_id=sender_id, text="Пожалуйста, напишите ваш вопрос:")
+            send_message(
+                user_id=sender_id,
+                text="Пожалуйста, напишите ваш вопрос:",
+                keyboard=build_cancel_keyboard(),
+            )
             return True
         with _lock:
             pending_replies.pop(sender_id, None)
@@ -649,7 +713,11 @@ def handle_pending_state(sender_id, text):
                 f"\u21AA\uFE0F Чтобы ответить, напишите: {num}: ваш текст"
             )
         send_message(user_id=NOTIFY_CHAT_ID, text=forward_text)
-        send_message(user_id=sender_id, text="\u2705 Спасибо, вопрос передан мастеру!\n\n\u23F1\uFE0F Ответим в течение 30 минут.")
+        send_message(
+            user_id=sender_id,
+            text="\u2705 Спасибо, вопрос передан мастеру!\n\n\u23F1\uFE0F Ответим в течение 30 минут.\n\n\U0001F447Выберите действие\U0001F447",
+            keyboard=build_main_menu_keyboard(),
+        )
         logger.info(f"Вопрос #{num} от user_id={sender_id}: {question_text}")
         return True
 
@@ -657,7 +725,7 @@ def handle_pending_state(sender_id, text):
         contact_text = (text or "").strip()
         valid, msg = validate_contact(contact_text)
         if not valid:
-            send_message(user_id=sender_id, text=msg)
+            send_message(user_id=sender_id, text=msg, keyboard=build_cancel_keyboard())
             return True
         with _lock:
             pending_replies.pop(sender_id, None)
@@ -671,7 +739,11 @@ def handle_pending_state(sender_id, text):
                 order_text += f"\u2022 \"{item['name']}\" — {item['price']} руб.\n"
         order_text += f"\n\U0001F4B0 Итого: {total} руб."
         send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
-        send_message(user_id=sender_id, text="\u2705 Спасибо за заказ!\n\nМастер свяжется с вами в ближайшее время.\n\n\U0001F449 Если нужно что-то изменить — нажмите \u00ab\U0001F6D2 Корзина\u00bb")
+        send_message(
+            user_id=sender_id,
+            text="\u2705 Спасибо за заказ!\n\nМастер свяжется с вами в ближайшее время.\n\n\U0001F447Выберите действие\U0001F447",
+            keyboard=build_main_menu_keyboard(),
+        )
         with _lock:
             user_carts[sender_id] = []
             save_state()
@@ -681,7 +753,7 @@ def handle_pending_state(sender_id, text):
         contact_text = (text or "").strip()
         valid, msg = validate_contact(contact_text)
         if not valid:
-            send_message(user_id=sender_id, text=msg)
+            send_message(user_id=sender_id, text=msg, keyboard=build_cancel_keyboard())
             return True
         with _lock:
             pending_replies.pop(sender_id, None)
@@ -689,27 +761,31 @@ def handle_pending_state(sender_id, text):
         item = state.get("item")
         order_text = f"\U0001F4D8 Быстрый заказ!\n\nТовар: \"{item['name']}\"\nЦена: {item['price']} руб.\nИмя и телефон: {contact_text}"
         send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
-        send_message(user_id=sender_id, text="\u2705 Спасибо! Мастер свяжется с вами в ближайшее время.\n\n\U0001F449 Если нужно что-то изменить — откройте \u00ab\U0001F4CB Каталог\u00bb")
+        send_message(
+            user_id=sender_id,
+            text="\u2705 Спасибо! Мастер свяжется с вами в ближайшее время.\n\n\U0001F447Выберите действие\U0001F447",
+            keyboard=build_main_menu_keyboard(),
+        )
         return True
 
     # Совместимость со старыми шагами
     if step == "waiting_name":
         name = (text or "").strip()
         if not name:
-            send_message(user_id=sender_id, text="Пожалуйста, напишите имя:")
+            send_message(user_id=sender_id, text="Пожалуйста, напишите имя:", keyboard=build_cancel_keyboard())
             return True
         with _lock:
             pending_replies[sender_id]["name"] = name
             pending_replies[sender_id]["step"] = "waiting_phone"
             pending_replies[sender_id]["timestamp"] = time.time()
             save_state()
-        send_message(user_id=sender_id, text=f"{name}, спасибо! \U0001F4DE Напишите ваш номер телефона (в любом формате)")
+        send_message(user_id=sender_id, text=f"{name}, спасибо! \U0001F4DE Напишите ваш номер телефона (в любом формате)", keyboard=build_cancel_keyboard())
         return True
 
     if step == "waiting_phone":
         phone = (text or "").strip()
         if not phone:
-            send_message(user_id=sender_id, text="Пожалуйста, напишите номер телефона:")
+            send_message(user_id=sender_id, text="Пожалуйста, напишите номер телефона:", keyboard=build_cancel_keyboard())
             return True
         with _lock:
             pending_replies.pop(sender_id, None)
@@ -724,7 +800,11 @@ def handle_pending_state(sender_id, text):
                 order_text += f"\u2022 \"{item['name']}\" — {item['price']} руб.\n"
         order_text += f"\n\U0001F4B0 Итого: {total} руб."
         send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
-        send_message(user_id=sender_id, text="\u2705 Спасибо за заказ!\n\nМастер свяжется с вами в ближайшее время.\n\n\U0001F449 Если нужно что-то изменить — нажмите \u00ab\U0001F6D2 Корзина\u00bb")
+        send_message(
+            user_id=sender_id,
+            text="\u2705 Спасибо за заказ!\n\nМастер свяжется с вами в ближайшее время.\n\n\U0001F447Выберите действие\U0001F447",
+            keyboard=build_main_menu_keyboard(),
+        )
         with _lock:
             user_carts[sender_id] = []
             save_state()
@@ -733,7 +813,7 @@ def handle_pending_state(sender_id, text):
     if step == "waiting_phone_quick":
         phone = (text or "").strip()
         if not phone:
-            send_message(user_id=sender_id, text="Пожалуйста, напишите номер телефона:")
+            send_message(user_id=sender_id, text="Пожалуйста, напишите номер телефона:", keyboard=build_cancel_keyboard())
             return True
         with _lock:
             pending_replies.pop(sender_id, None)
@@ -741,7 +821,11 @@ def handle_pending_state(sender_id, text):
         item = state.get("item")
         order_text = f"\U0001F4D8 Быстрый заказ!\nТовар: \"{item['name']}\"\nЦена: {item['price']} руб.\nТелефон: {phone}"
         send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
-        send_message(user_id=sender_id, text="\u2705 Спасибо! Мастер свяжется с вами в ближайшее время.\n\n\U0001F449 Если нужно что-то изменить — откройте \u00ab\U0001F4CB Каталог\u00bb")
+        send_message(
+            user_id=sender_id,
+            text="\u2705 Спасибо! Мастер свяжется с вами в ближайшее время.\n\n\U0001F447Выберите действие\U0001F447",
+            keyboard=build_main_menu_keyboard(),
+        )
         return True
 
     return False
@@ -760,9 +844,17 @@ def handle_pending_reply_comment(sender_id, text):
         comment_mid = reply_data["comment_mid"]
         success = post_comment(post_id, text, reply_to_mid=comment_mid)
         if success:
-            send_message(user_id=sender_id, text="\u2705 Ответ отправлен в канал!")
+            send_message(
+                user_id=sender_id,
+                text="\u2705 Ответ отправлен в канал!\n\n\U0001F447Выберите действие\U0001F447",
+                keyboard=build_main_menu_keyboard(),
+            )
         else:
-            send_message(user_id=sender_id, text="\u274C Не удалось отправить ответ. Проверьте, что бот — администратор канала с правом write.")
+            send_message(
+                user_id=sender_id,
+                text="\u274C Не удалось отправить ответ. Проверьте, что бот — администратор канала с правом write.\n\n\U0001F447Выберите действие\U0001F447",
+                keyboard=build_main_menu_keyboard(),
+            )
             with _lock:
                 pending_replies[sender_id] = reply_data
                 save_state()
@@ -784,8 +876,8 @@ def handle_message_created(data):
         if handle_admin_reply(sender_id, text):
             return
 
-    # Команда /cancel — отменить текущее действие
-    if cmd in ["/cancel", "/отмена"]:
+    # Команда /cancel или кнопка «Отмена» — отменить текущее действие
+    if cmd in ["/cancel", "/отмена"] or (text and text.strip() == "\u274C Отмена"):
         with _lock:
             had = pending_replies.pop(sender_id, None)
             if had:
@@ -796,7 +888,13 @@ def handle_message_created(data):
             send_message(user_id=sender_id, text="Нечего отменять.\n\n\U0001F447Выберите действие\U0001F447", keyboard=build_main_menu_keyboard())
         return
 
-    # Кнопки главного меню
+    # Кнопки главного меню — очищаем pending state, если пользователь нажал кнопку меню
+    _menu_texts = {"\U0001F4CB Каталог", "\U0001F6D2 Корзина", "\U0001F4DE Мастер", "\u2753 Задать вопрос"}
+    if text and text.strip() in _menu_texts and sender_id in pending_replies:
+        with _lock:
+            pending_replies.pop(sender_id, None)
+            save_state()
+
     if text and text.strip() == "\U0001F4CB Каталог":
         show_catalog(sender_id)
         return
@@ -804,13 +902,21 @@ def handle_message_created(data):
         show_cart(sender_id)
         return
     if text and text.strip() == "\U0001F4DE Мастер":
-        send_message(user_id=sender_id, text="\U0001F4DE Мастер:\n\nЕвгений\n\u260E\uFE0F 8 (989) 622-37-32\n\n\U0001F449 Или закажите через \u00ab\U0001F4CB Каталог\u00bb")
+        send_message(
+            user_id=sender_id,
+            text="\U0001F4DE Мастер:\n\nЕвгений\n\u260E\uFE0F 8 (989) 622-37-32\n\n\U0001F447Выберите действие\U0001F447",
+            keyboard=build_catalog_keyboard(),
+        )
         return
     if text and text.strip() == "\u2753 Задать вопрос":
         with _lock:
             pending_replies[sender_id] = {"step": "waiting_question", "first_name": first_name, "timestamp": time.time()}
             save_state()
-        send_message(user_id=sender_id, text="\U0001F4AC Напишите ваш вопрос прямо здесь.\n\nМастер увидит его сразу и ответит в течение 30 минут.")
+        send_message(
+            user_id=sender_id,
+            text="\U0001F4AC Напишите ваш вопрос прямо здесь.\n\nМастер увидит его сразу и ответит в течение 30 минут.",
+            keyboard=build_cancel_keyboard(),
+        )
         return
 
     # Текстовые команды
@@ -821,7 +927,11 @@ def handle_message_created(data):
         show_cart(sender_id)
         return
     if cmd in ["/help", "/помощь"]:
-        send_message(user_id=sender_id, text="\U0001FAB5 Мастерская Игнатьевых — помощь\n\n\U0001F4CB /каталог — открыть каталог\n\U0001F6D2 /корзина — посмотреть корзину\n\u2753 /помощь — эта справка\n\U0001F4A1 /cancel — отменить текущее действие\n\nТакже можно нажимать кнопки под сообщениями бота.")
+        send_message(
+            user_id=sender_id,
+            text="\U0001FAB5 Мастерская Игнатьевых — помощь\n\n\U0001F4CB /каталог — открыть каталог\n\U0001F6D2 /корзина — посмотреть корзину\n\u2753 /помощь — эта справка\n\U0001F4A1 /cancel — отменить текущее действие\n\nТакже можно нажимать кнопки под сообщениями бота.\n\n\U0001F447Выберите действие\U0001F447",
+            keyboard=build_main_menu_keyboard(),
+        )
         return
 
     # Команда /вопросы — только для админа
