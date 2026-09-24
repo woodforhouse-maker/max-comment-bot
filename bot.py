@@ -31,6 +31,20 @@ SESSION_TIMEOUT = 600  # 10 минут — срок ожидания ответ�
 STATE_DIR = os.path.join(os.path.dirname(__file__), "state")
 os.makedirs(STATE_DIR, exist_ok=True)
 
+# === АДМИНИСТРАТОРЫ ===
+# Мария (получает уведомления бота) — NOTIFY_CHAT_ID из переменных окружения
+# Евгений (мастер) — user_id 39193669
+ADMIN_IDS = set()
+if NOTIFY_CHAT_ID:
+    ADMIN_IDS.add(str(NOTIFY_CHAT_ID))
+ADMIN_IDS.add("39193669")
+
+
+def is_admin(user_id):
+    """Проверяет, является ли пользователь администратором."""
+    return str(user_id) in ADMIN_IDS
+
+
 REQUIRED_ENV = ["MAX_BOT_TOKEN", "WEBHOOK_URL", "NOTIFY_CHAT_ID"]
 _missing = [k for k in REQUIRED_ENV if not os.environ.get(k)]
 if _missing:
@@ -178,6 +192,60 @@ for _cat in CATALOG_DATA.get("categories", []):
         CATALOG_INDEX[_item["id"]] = _item
 
 
+def save_catalog():
+    """Сохраняет каталог в catalog.json."""
+    file_path = os.path.join(os.path.dirname(__file__), "catalog.json")
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(CATALOG_DATA, f, ensure_ascii=False, indent=2)
+        logger.info("Каталог сохранён в catalog.json")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка сохранения каталога: {e}")
+        return False
+
+
+def rebuild_catalog_index():
+    """Перестраивает индекс каталога после изменений."""
+    CATALOG_INDEX.clear()
+    for _cat in CATALOG_DATA.get("categories", []):
+        for _item in _cat.get("items", []):
+            CATALOG_INDEX[_item["id"]] = _item
+
+
+def transliterate(text):
+    """Транслитерация русского текста в латиницу для генерации id."""
+    trans_map = {
+        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
+        'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+        'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+        'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
+        'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+        ' ': '_', '"': '', '«': '', '»': '', '№': '', '#': '',
+    }
+    result = ""
+    for ch in text.lower():
+        result += trans_map.get(ch, ch if ch.isalnum() or ch == '_' else '_')
+    # Убираем повторяющиеся подчёркивания
+    while '__' in result:
+        result = result.replace('__', '_')
+    result = result.strip('_')
+    return result
+
+
+def generate_item_id(name):
+    """Генерирует уникальный id из названия товара."""
+    base_id = transliterate(name)
+    if not base_id:
+        base_id = "item"
+    item_id = base_id
+    counter = 2
+    while item_id in CATALOG_INDEX:
+        item_id = f"{base_id}_{counter}"
+        counter += 1
+    return item_id
+
+
 # === FLASK ===
 
 app = Flask(__name__)
@@ -320,7 +388,7 @@ def build_main_menu_keyboard():
 
 
 def build_catalog_keyboard():
-    """Кнопка «Каталог» — для сообщений, где нужно направить пользователя в каталог."""
+    """Клавиатура с одной кнопкой — Каталог."""
     return [
         [
             {"type": "message", "text": "\U0001F4CB Каталог", "payload": "\U0001F4CB Каталог"},
@@ -329,7 +397,7 @@ def build_catalog_keyboard():
 
 
 def build_cart_catalog_keyboard():
-    """Кнопки «Корзина» + «Каталог» — после добавления товара в корзину."""
+    """Клавиатура с кнопками Корзина + Каталог."""
     return [
         [
             {"type": "message", "text": "\U0001F6D2 Корзина", "payload": "\U0001F6D2 Корзина"},
@@ -339,12 +407,42 @@ def build_cart_catalog_keyboard():
 
 
 def build_cancel_keyboard():
-    """Кнопка «Отмена» — для шагов, где от пользователя требуется текстовый ввод."""
+    """Клавиатура с одной кнопкой — Отмена."""
     return [
         [
-            {"type": "message", "text": "\u274C Отмена", "payload": "\u274C Отмена"},
+            {"type": "callback", "text": "\u274C Отмена", "payload": "cancel_action"},
         ],
     ]
+
+
+def build_admin_menu_keyboard():
+    """Главное меню админ-режима."""
+    return [
+        [
+            {"type": "callback", "text": "\U0001F4E6 Категорию", "payload": "admin_add_category"},
+            {"type": "callback", "text": "\U0001F4CB Товар", "payload": "admin_add_item"},
+        ],
+        [
+            {"type": "callback", "text": "\U0001F4DD Список каталога", "payload": "admin_list_catalog"},
+            {"type": "callback", "text": "\u274C Выход", "payload": "admin_exit"},
+        ],
+    ]
+
+
+def build_admin_category_keyboard():
+    """Клавиатура выбора категории для добавления товара."""
+    categories = CATALOG_DATA.get("categories", [])
+    buttons = []
+    row = []
+    for i, cat in enumerate(categories):
+        row.append({"type": "callback", "text": f"\U0001F4E6 {cat['name']}", "payload": f"admin_select_cat:{i}"})
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([{"type": "callback", "text": "\u274C Отмена", "payload": "cancel_action"}])
+    return buttons
 
 
 def send_welcome(target_id, is_chat=False):
@@ -432,7 +530,7 @@ def show_cart(user_id):
     if not cart:
         send_message(
             user_id=user_id,
-            text="\U0001F6D2 Ваша корзина пуста.\n\n\U0001F447Выберите действие\U0001F447",
+            text="\U0001F6D2 Ваша корзина пуста.\n\n\U0001F449 Откройте \u00ab\U0001F4CB Каталог\u00bb — выберите изделие!",
             keyboard=build_catalog_keyboard(),
         )
         return
@@ -466,6 +564,140 @@ def validate_contact(text):
     return True, ""
 
 
+# === АДМИН-РЕЖИМ: ДОБАВЛЕНИЕ В КАТАЛОГ ===
+
+def admin_show_menu(user_id):
+    """Показывает меню админ-режима."""
+    send_message(
+        user_id=user_id,
+        text="\U0001F527 Режим добавления в каталог\n\nЧто добавляем?",
+        keyboard=build_admin_menu_keyboard(),
+    )
+
+
+def admin_list_catalog(user_id):
+    """Показывает весь каталог со списком id."""
+    categories = CATALOG_DATA.get("categories", [])
+    if not categories:
+        send_message(
+            user_id=user_id,
+            text="Каталог пуст. Добавьте первую категорию через /добавить",
+            keyboard=build_admin_menu_keyboard(),
+        )
+        return
+    text_lines = ["\U0001F4CB Текущий каталог:\n"]
+    for i, cat in enumerate(categories):
+        text_lines.append(f"\U0001F4E6 {cat['name']}")
+        for item in cat.get("items", []):
+            text_lines.append(f"   \u2022 \"{item['name']}\" — {item['price']} руб. (id: {item['id']})")
+        text_lines.append("")
+    text_lines.append(f"Всего категорий: {len(categories)}")
+    text_lines.append(f"Всего товаров: {len(CATALOG_INDEX)}")
+    send_message(
+        user_id=user_id,
+        text="\n".join(text_lines),
+        keyboard=build_admin_menu_keyboard(),
+    )
+
+
+def admin_start_add_category(user_id):
+    """Начинает процесс добавления категории."""
+    with _lock:
+        pending_replies[user_id] = {
+            "step": "admin_category_name",
+            "timestamp": time.time(),
+        }
+        save_state()
+    send_message(
+        user_id=user_id,
+        text="\U0001F4E6 Напишите название новой категории:",
+        keyboard=build_cancel_keyboard(),
+    )
+
+
+def admin_start_add_item(user_id):
+    """Начинает процесс добавления товара — выбор категории."""
+    categories = CATALOG_DATA.get("categories", [])
+    if not categories:
+        send_message(
+            user_id=user_id,
+            text="Сначала добавьте хотя бы одну категорию!",
+            keyboard=build_admin_menu_keyboard(),
+        )
+        return
+    send_message(
+        user_id=user_id,
+        text="\U0001F4CB Выберите категорию для нового товара:",
+        keyboard=build_admin_category_keyboard(),
+    )
+
+
+def admin_item_preview(user_id, state):
+    """Показывает превью карточки товара перед сохранением."""
+    name = state.get("item_name", "")
+    price = state.get("item_price", 0)
+    desc = state.get("item_desc", "")
+    photo = state.get("item_photo", "")
+    cat_index = state.get("cat_index", 0)
+
+    text = (
+        f"\U0001F50D Превью карточки:\n\n"
+        f"\U0001FA91 \"{name}\"\n"
+        f"\U0001F4B0 Цена: {price} руб.\n"
+        f"\U0001F4DD {desc}\n"
+    )
+    if photo and photo != "нет":
+        text += f"\U0001F4F7 Фото: {photo}\n"
+    text += f"\n\u261D\uFE0F Всё верно?"
+    keyboard = [
+        [
+            {"type": "callback", "text": "\u2705 Сохранить", "payload": "admin_save_item"},
+            {"type": "callback", "text": "\u274C Отмена", "payload": "cancel_action"},
+        ],
+    ]
+    send_message(user_id=user_id, text=text, keyboard=keyboard)
+
+
+def admin_save_item(user_id, state):
+    """Сохраняет товар в каталог."""
+    cat_index = state.get("cat_index", 0)
+    categories = CATALOG_DATA.get("categories", [])
+    if cat_index >= len(categories):
+        send_message(user_id=user_id, text="\u26A0\uFE0F Категория не найдена!")
+        return
+
+    name = state.get("item_name", "")
+    price = state.get("item_price", 0)
+    desc = state.get("item_desc", "")
+    photo = state.get("item_photo", "")
+
+    item_id = generate_item_id(name)
+    new_item = {
+        "id": item_id,
+        "name": name,
+        "price": price,
+        "description": desc,
+    }
+    if photo and photo.lower() != "нет":
+        new_item["photo_url"] = photo
+
+    categories[cat_index].setdefault("items", []).append(new_item)
+    if save_catalog():
+        rebuild_catalog_index()
+        send_message(
+            user_id=user_id,
+            text=f"\u2705 Товар \"{name}\" добавлен!\nid: {item_id}\n\nМожно добавить ещё или выйти.",
+            keyboard=build_admin_menu_keyboard(),
+        )
+        logger.info(f"Админ {user_id} добавил товар: {name} (id: {item_id})")
+    else:
+        send_message(
+            user_id=user_id,
+            text="\u274C Ошибка сохранения! Проверьте права на catalog.json",
+            keyboard=build_admin_menu_keyboard(),
+        )
+
+
 # === ОБРАБОТКА CALLBACK ===
 
 def handle_callback(data):
@@ -482,6 +714,85 @@ def handle_callback(data):
 
     if not sender_id:
         answer_callback(callback_id, "Ошибка: не удалось определить пользователя")
+        return jsonify({"ok": True}), 200
+
+    # --- cancel_action (кнопка Отмена) ---
+    if payload == "cancel_action":
+        with _lock:
+            had = pending_replies.pop(sender_id, None)
+            if had:
+                save_state()
+        answer_callback(callback_id, "\u274C Отменено")
+        if had and isinstance(had, dict) and had.get("step", "").startswith("admin_"):
+            admin_show_menu(sender_id)
+        else:
+            send_message(
+                user_id=sender_id,
+                text="\u274C Действие отменено.\n\n\U0001F447Выберите действие\U0001F447",
+                keyboard=build_main_menu_keyboard(),
+            )
+        return jsonify({"ok": True}), 200
+
+    # --- Админ-команды (только для админов) ---
+    if payload.startswith("admin_") and not is_admin(sender_id):
+        answer_callback(callback_id, "Нет доступа")
+        return jsonify({"ok": True}), 200
+
+    if payload == "admin_add_category" and is_admin(sender_id):
+        answer_callback(callback_id, "Добавляем категорию")
+        admin_start_add_category(sender_id)
+        return jsonify({"ok": True}), 200
+
+    if payload == "admin_add_item" and is_admin(sender_id):
+        answer_callback(callback_id, "Добавляем товар")
+        admin_start_add_item(sender_id)
+        return jsonify({"ok": True}), 200
+
+    if payload == "admin_list_catalog" and is_admin(sender_id):
+        answer_callback(callback_id, "Список каталога")
+        admin_list_catalog(sender_id)
+        return jsonify({"ok": True}), 200
+
+    if payload == "admin_exit" and is_admin(sender_id):
+        answer_callback(callback_id, "Выход")
+        send_message(
+            user_id=sender_id,
+            text="\u2705 Вы вышли из режима добавления.\n\n\U0001F447Выберите действие\U0001F447",
+            keyboard=build_main_menu_keyboard(),
+        )
+        return jsonify({"ok": True}), 200
+
+    if payload.startswith("admin_select_cat:") and is_admin(sender_id):
+        cat_index = int(payload.split(":", 1)[1])
+        categories = CATALOG_DATA.get("categories", [])
+        if cat_index < len(categories):
+            with _lock:
+                pending_replies[sender_id] = {
+                    "step": "admin_item_name",
+                    "cat_index": cat_index,
+                    "timestamp": time.time(),
+                }
+                save_state()
+            answer_callback(callback_id, f"Категория: {categories[cat_index]['name']}")
+            send_message(
+                user_id=sender_id,
+                text="\U0001F4DD Напишите название изделия:",
+                keyboard=build_cancel_keyboard(),
+            )
+        else:
+            answer_callback(callback_id, "Категория не найдена")
+        return jsonify({"ok": True}), 200
+
+    if payload == "admin_save_item" and is_admin(sender_id):
+        state = pending_replies.get(sender_id)
+        if state and isinstance(state, dict) and state.get("step") == "admin_item_confirm":
+            answer_callback(callback_id, "Сохраняю...")
+            admin_save_item(sender_id, state)
+            with _lock:
+                pending_replies.pop(sender_id, None)
+                save_state()
+        else:
+            answer_callback(callback_id, "Сессия истекла")
         return jsonify({"ok": True}), 200
 
     # --- reply:<post_id>:<comment_mid> ---
@@ -535,7 +846,7 @@ def handle_callback(data):
         count = len(user_carts[sender_id])
         send_message(
             user_id=sender_id,
-            text=f"\U0001F6D2 \u00ab{item['name']}\u00bb добавлен в корзину.\nВ корзине товаров: {count}\n\n\U0001F447Выберите действие\U0001F447",
+            text=f"\U0001F6D2 \u00ab{item['name']}\u00bb добавлен в корзину.\nВ корзине товаров: {count}\n\n\U0001F449 Нажмите \u00ab\U0001F6D2 Корзина\u00bb, чтобы оформить заказ.",
             keyboard=build_cart_catalog_keyboard(),
         )
         return jsonify({"ok": True}), 200
@@ -621,7 +932,7 @@ def handle_callback(data):
         answer_callback(callback_id, "Корзина очищена")
         send_message(
             user_id=sender_id,
-            text="\U0001F5D1 Корзина очищена.\n\n\U0001F447Выберите действие\U0001F447",
+            text="\U0001F5D1 Корзина очищена.\n\n\U0001F449 Откройте \u00ab\U0001F4CB Каталог\u00bb — выберите изделие!",
             keyboard=build_catalog_keyboard(),
         )
         return jsonify({"ok": True}), 200
@@ -640,8 +951,12 @@ def handle_admin_reply(sender_id, text):
         reply_text = match.group(2).strip()
         if num in active_dialogs:
             client_user_id = active_dialogs[num]["user_id"]
-            send_message(user_id=client_user_id, text=reply_text, keyboard=build_main_menu_keyboard())
-            send_message(user_id=sender_id, text=f"\u2705 Ответ #{num} отправлен клиенту.")
+            send_message(user_id=client_user_id, text=reply_text)
+            send_message(
+                user_id=sender_id,
+                text=f"\u2705 Ответ #{num} отправлен клиенту.",
+                keyboard=build_main_menu_keyboard(),
+            )
             logger.info(f"Ответ #{num} отправлен user_id={client_user_id}")
             with _lock:
                 del active_dialogs[num]
@@ -653,8 +968,96 @@ def handle_admin_reply(sender_id, text):
     return False
 
 
+def handle_admin_steps(sender_id, text, state):
+    """Обработка шагов админ-режима. Возвращает True если обработано."""
+    step = state.get("step")
+
+    if step == "admin_category_name":
+        cat_name = (text or "").strip()
+        if not cat_name:
+            send_message(user_id=sender_id, text="Название не может быть пустым. Напишите название категории:", keyboard=build_cancel_keyboard())
+            return True
+        # Проверяем, нет ли уже такой категории
+        for cat in CATALOG_DATA.get("categories", []):
+            if cat["name"].lower() == cat_name.lower():
+                send_message(user_id=sender_id, text=f"\u26A0\uFE0F Категория \"{cat_name}\" уже существует!", keyboard=build_admin_menu_keyboard())
+                with _lock:
+                    pending_replies.pop(sender_id, None)
+                    save_state()
+                return True
+        CATALOG_DATA.setdefault("categories", []).append({"name": cat_name, "items": []})
+        if save_catalog():
+            send_message(
+                user_id=sender_id,
+                text=f"\u2705 Категория \"{cat_name}\" добавлена!\n\nТеперь можно добавить в неё товары.",
+                keyboard=build_admin_menu_keyboard(),
+            )
+            logger.info(f"Админ {sender_id} добавил категорию: {cat_name}")
+        else:
+            send_message(user_id=sender_id, text="\u274C Ошибка сохранения!", keyboard=build_admin_menu_keyboard())
+        with _lock:
+            pending_replies.pop(sender_id, None)
+            save_state()
+        return True
+
+    if step == "admin_item_name":
+        item_name = (text or "").strip()
+        if not item_name:
+            send_message(user_id=sender_id, text="Название не может быть пустым. Напишите название изделия:", keyboard=build_cancel_keyboard())
+            return True
+        with _lock:
+            pending_replies[sender_id]["item_name"] = item_name
+            pending_replies[sender_id]["step"] = "admin_item_price"
+            pending_replies[sender_id]["timestamp"] = time.time()
+            save_state()
+        send_message(user_id=sender_id, text=f"\U0001F4B0 Напишите цену в рублях (только число):\n\nНапример: 12900", keyboard=build_cancel_keyboard())
+        return True
+
+    if step == "admin_item_price":
+        price_text = (text or "").strip()
+        try:
+            price = int(price_text.replace(" ", "").replace("руб", "").replace("р.", "").replace("₽", ""))
+            if price <= 0:
+                raise ValueError
+        except (ValueError, TypeError):
+            send_message(user_id=sender_id, text="\u26A0\uFE0F Не получилось распознать цену. Напишите только число, например: 12900", keyboard=build_cancel_keyboard())
+            return True
+        with _lock:
+            pending_replies[sender_id]["item_price"] = price
+            pending_replies[sender_id]["step"] = "admin_item_desc"
+            pending_replies[sender_id]["timestamp"] = time.time()
+            save_state()
+        send_message(user_id=sender_id, text="\U0001F4DD Напишите краткое описание (2–3 строки):", keyboard=build_cancel_keyboard())
+        return True
+
+    if step == "admin_item_desc":
+        desc = (text or "").strip()
+        if not desc:
+            send_message(user_id=sender_id, text="Описание не может быть пустым. Напишите краткое описание:", keyboard=build_cancel_keyboard())
+            return True
+        with _lock:
+            pending_replies[sender_id]["item_desc"] = desc
+            pending_replies[sender_id]["step"] = "admin_item_photo"
+            pending_replies[sender_id]["timestamp"] = time.time()
+            save_state()
+        send_message(user_id=sender_id, text="\U0001F4F7 Отправьте ссылку на фото.\nЕсли фото нет — напишите «нет»:", keyboard=build_cancel_keyboard())
+        return True
+
+    if step == "admin_item_photo":
+        photo = (text or "").strip()
+        with _lock:
+            pending_replies[sender_id]["item_photo"] = photo
+            pending_replies[sender_id]["step"] = "admin_item_confirm"
+            pending_replies[sender_id]["timestamp"] = time.time()
+            save_state()
+        admin_item_preview(sender_id, pending_replies[sender_id])
+        return True
+
+    return False
+
+
 def handle_pending_state(sender_id, text):
-    """Обработка шагов (вопрос, оформление, быстрый заказ). Возвращает True если обработано."""
+    """Обработка шагов (вопрос, оформление, быстрый заказ, админ). Возвращает True если обработано."""
     state = pending_replies.get(sender_id)
     if not state or not isinstance(state, dict):
         return False
@@ -668,21 +1071,28 @@ def handle_pending_state(sender_id, text):
         with _lock:
             del pending_replies[sender_id]
             save_state()
-        send_message(
-            user_id=sender_id,
-            text="\u23F1\uFE0F Время ожидания истекло. Начните заново.\n\n\U0001F447Выберите действие\U0001F447",
-            keyboard=build_main_menu_keyboard(),
-        )
+        if step.startswith("admin_"):
+            send_message(
+                user_id=sender_id,
+                text="\u23F1\uFE0F Время ожидания истекло.\n\n\U0001F527 Режим добавления закрыт. Напишите /добавить чтобы начать заново.",
+                keyboard=build_main_menu_keyboard(),
+            )
+        else:
+            send_message(
+                user_id=sender_id,
+                text="\u23F1\uFE0F Время ожидания истекло. Начните заново.",
+                keyboard=build_main_menu_keyboard(),
+            )
         return True
+
+    # Админ-шаги
+    if step.startswith("admin_"):
+        return handle_admin_steps(sender_id, text, state)
 
     if step == "waiting_question":
         question_text = (text or "").strip()
         if not question_text:
-            send_message(
-                user_id=sender_id,
-                text="Пожалуйста, напишите ваш вопрос:",
-                keyboard=build_cancel_keyboard(),
-            )
+            send_message(user_id=sender_id, text="Пожалуйста, напишите ваш вопрос:", keyboard=build_cancel_keyboard())
             return True
         with _lock:
             pending_replies.pop(sender_id, None)
@@ -715,7 +1125,7 @@ def handle_pending_state(sender_id, text):
         send_message(user_id=NOTIFY_CHAT_ID, text=forward_text)
         send_message(
             user_id=sender_id,
-            text="\u2705 Спасибо, вопрос передан мастеру!\n\n\u23F1\uFE0F Ответим в течение 30 минут.\n\n\U0001F447Выберите действие\U0001F447",
+            text="\u2705 Спасибо, вопрос передан мастеру!\n\n\u23F1\uFE0F Ответим в течение 30 минут.",
             keyboard=build_main_menu_keyboard(),
         )
         logger.info(f"Вопрос #{num} от user_id={sender_id}: {question_text}")
@@ -741,7 +1151,7 @@ def handle_pending_state(sender_id, text):
         send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
         send_message(
             user_id=sender_id,
-            text="\u2705 Спасибо за заказ!\n\nМастер свяжется с вами в ближайшее время.\n\n\U0001F447Выберите действие\U0001F447",
+            text="\u2705 Спасибо за заказ!\n\nМастер свяжется с вами в ближайшее время.",
             keyboard=build_main_menu_keyboard(),
         )
         with _lock:
@@ -763,7 +1173,7 @@ def handle_pending_state(sender_id, text):
         send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
         send_message(
             user_id=sender_id,
-            text="\u2705 Спасибо! Мастер свяжется с вами в ближайшее время.\n\n\U0001F447Выберите действие\U0001F447",
+            text="\u2705 Спасибо! Мастер свяжется с вами в ближайшее время.",
             keyboard=build_main_menu_keyboard(),
         )
         return True
@@ -802,7 +1212,7 @@ def handle_pending_state(sender_id, text):
         send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
         send_message(
             user_id=sender_id,
-            text="\u2705 Спасибо за заказ!\n\nМастер свяжется с вами в ближайшее время.\n\n\U0001F447Выберите действие\U0001F447",
+            text="\u2705 Спасибо за заказ!\n\nМастер свяжется с вами в ближайшее время.",
             keyboard=build_main_menu_keyboard(),
         )
         with _lock:
@@ -823,7 +1233,7 @@ def handle_pending_state(sender_id, text):
         send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
         send_message(
             user_id=sender_id,
-            text="\u2705 Спасибо! Мастер свяжется с вами в ближайшее время.\n\n\U0001F447Выберите действие\U0001F447",
+            text="\u2705 Спасибо! Мастер свяжется с вами в ближайшее время.",
             keyboard=build_main_menu_keyboard(),
         )
         return True
@@ -846,13 +1256,13 @@ def handle_pending_reply_comment(sender_id, text):
         if success:
             send_message(
                 user_id=sender_id,
-                text="\u2705 Ответ отправлен в канал!\n\n\U0001F447Выберите действие\U0001F447",
+                text="\u2705 Ответ отправлен в канал!",
                 keyboard=build_main_menu_keyboard(),
             )
         else:
             send_message(
                 user_id=sender_id,
-                text="\u274C Не удалось отправить ответ. Проверьте, что бот — администратор канала с правом write.\n\n\U0001F447Выберите действие\U0001F447",
+                text="\u274C Не удалось отправить ответ. Проверьте, что бот — администратор канала с правом write.",
                 keyboard=build_main_menu_keyboard(),
             )
             with _lock:
@@ -871,13 +1281,16 @@ def handle_message_created(data):
     logger.info(f"Сообщение от user_id={sender_id}: {text}")
     cmd = text.lower().strip() if text else ""
 
-    # Перехват ответов админа
-    if NOTIFY_CHAT_ID and str(sender_id) == NOTIFY_CHAT_ID and text and not text.startswith("/"):
-        if handle_admin_reply(sender_id, text):
-            return
+    # Перехват ответов админа (любой админ может отвечать клиентам)
+    if is_admin(sender_id) and text and not text.startswith("/"):
+        # Сначала проверяем, не в режиме ли админ-добавления
+        state = pending_replies.get(sender_id)
+        if not (state and isinstance(state, dict) and state.get("step", "").startswith("admin_")):
+            if handle_admin_reply(sender_id, text):
+                return
 
-    # Команда /cancel или кнопка «Отмена» — отменить текущее действие
-    if cmd in ["/cancel", "/отмена"] or (text and text.strip() == "\u274C Отмена"):
+    # Команда /cancel — отменить текущее действие
+    if cmd in ["/cancel", "/отмена"]:
         with _lock:
             had = pending_replies.pop(sender_id, None)
             if had:
@@ -888,23 +1301,38 @@ def handle_message_created(data):
             send_message(user_id=sender_id, text="Нечего отменять.\n\n\U0001F447Выберите действие\U0001F447", keyboard=build_main_menu_keyboard())
         return
 
-    # Кнопки главного меню — очищаем pending state, если пользователь нажал кнопку меню
-    _menu_texts = {"\U0001F4CB Каталог", "\U0001F6D2 Корзина", "\U0001F4DE Мастер", "\u2753 Задать вопрос"}
-    if text and text.strip() in _menu_texts and sender_id in pending_replies:
-        with _lock:
-            pending_replies.pop(sender_id, None)
-            save_state()
+    # Админ-команды
+    if cmd == "/добавить" and is_admin(sender_id):
+        admin_show_menu(sender_id)
+        return
 
+    if cmd == "/каталог_админ" and is_admin(sender_id):
+        admin_list_catalog(sender_id)
+        return
+
+    # Кнопки главного меню — очищаем pending state при нажатии
     if text and text.strip() == "\U0001F4CB Каталог":
+        with _lock:
+            if sender_id in pending_replies:
+                pending_replies.pop(sender_id, None)
+                save_state()
         show_catalog(sender_id)
         return
     if text and text.strip() == "\U0001F6D2 Корзина":
+        with _lock:
+            if sender_id in pending_replies:
+                pending_replies.pop(sender_id, None)
+                save_state()
         show_cart(sender_id)
         return
     if text and text.strip() == "\U0001F4DE Мастер":
+        with _lock:
+            if sender_id in pending_replies:
+                pending_replies.pop(sender_id, None)
+                save_state()
         send_message(
             user_id=sender_id,
-            text="\U0001F4DE Мастер:\n\nЕвгений\n\u260E\uFE0F 8 (989) 622-37-32\n\n\U0001F447Выберите действие\U0001F447",
+            text="\U0001F4DE Мастер:\n\nЕвгений\n\u260E\uFE0F 8 (989) 622-37-32",
             keyboard=build_catalog_keyboard(),
         )
         return
@@ -927,15 +1355,14 @@ def handle_message_created(data):
         show_cart(sender_id)
         return
     if cmd in ["/help", "/помощь"]:
-        send_message(
-            user_id=sender_id,
-            text="\U0001FAB5 Мастерская Игнатьевых — помощь\n\n\U0001F4CB /каталог — открыть каталог\n\U0001F6D2 /корзина — посмотреть корзину\n\u2753 /помощь — эта справка\n\U0001F4A1 /cancel — отменить текущее действие\n\nТакже можно нажимать кнопки под сообщениями бота.\n\n\U0001F447Выберите действие\U0001F447",
-            keyboard=build_main_menu_keyboard(),
-        )
+        help_text = "\U0001FAB5 Мастерская Игнатьевых — помощь\n\n\U0001F4CB /каталог — открыть каталог\n\U0001F6D2 /корзина — посмотреть корзину\n\u2753 /помощь — эта справка\n\U0001F4A1 /cancel — отменить текущее действие\n\nТакже можно нажимать кнопки под сообщениями бота."
+        if is_admin(sender_id):
+            help_text += "\n\n\U0001F527 /добавить — добавить категорию или товар\n\U0001F4CB /каталог_админ — список каталога с id"
+        send_message(user_id=sender_id, text=help_text, keyboard=build_main_menu_keyboard())
         return
 
-    # Команда /вопросы — только для админа
-    if cmd == "/вопросы" and NOTIFY_CHAT_ID and str(sender_id) == NOTIFY_CHAT_ID:
+    # Команда /вопросы — для всех админов
+    if cmd == "/вопросы" and is_admin(sender_id):
         if active_dialogs:
             lines = []
             for num, d in sorted(active_dialogs.items()):
@@ -947,7 +1374,7 @@ def handle_message_created(data):
             send_message(user_id=sender_id, text="Нет активных диалогов.")
         return
 
-    # Обработка шагов (вопрос, заказ, быстрый заказ)
+    # Обработка шагов (вопрос, заказ, быстрый заказ, админ-добавление)
     if sender_id in pending_replies:
         # Сохраняем first_name в state, если его там нет (для старых сессий)
         state = pending_replies.get(sender_id)
@@ -1058,6 +1485,7 @@ def index():
         "active_dialogs": len(active_dialogs),
         "pending_replies": len(pending_replies),
         "carts": len(user_carts),
+        "admins": list(ADMIN_IDS),
     }), 200
 
 
