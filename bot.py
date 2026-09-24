@@ -12,6 +12,7 @@ from flask import Flask, request, jsonify
 import requests
 import urllib3
 
+# Устранение предупреждения только о невалидных сертификатах, но не отключение проверки
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # === ЛОГИРОВАНИЕ ===
@@ -29,7 +30,7 @@ WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 API_URL = "https://platform-api2.max.ru"
 CHANNEL_USERNAME = "channel_ignatyevy"
 SESSION_TIMEOUT = 600  # 10 минут
-STATE_DIR = os.path.join(os.path.dirname(__file__), "state")
+STATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state")
 os.makedirs(STATE_DIR, exist_ok=True)
 
 # === АДМИНЫ ===
@@ -40,9 +41,13 @@ if NOTIFY_CHAT_ID:
 ADMIN_IDS.add("39193669")  # Евгений
 
 def is_admin(user_id):
-    return str(user_id) in ADMIN_IDS
+    try:
+        return str(user_id) in ADMIN_IDS
+    except (TypeError, AttributeError):
+        return False
 
-REQUIRED_ENV = ["MAX_BOT_TOKEN", "WEBHOOK_URL", "NOTIFY_CHAT_ID"]
+# ИСПРАВЛЕНИЕ: Добавлен WEBHOOK_SECRET в список обязательных переменных окружения
+REQUIRED_ENV = ["MAX_BOT_TOKEN", "WEBHOOK_URL", "NOTIFY_CHAT_ID", "WEBHOOK_SECRET"]
 _missing = [k for k in REQUIRED_ENV if not os.environ.get(k)]
 if _missing:
     logger.warning(f"Не заданы переменные окружения: {', '.join(_missing)}.")
@@ -61,7 +66,6 @@ STATE_FILES = {
     "question_counter": os.path.join(STATE_DIR, "question_counter.json"),
 }
 
-
 def save_state():
     try:
         with open(STATE_FILES["pending_replies"], "w", encoding="utf-8") as f:
@@ -75,7 +79,6 @@ def save_state():
     except Exception as e:
         logger.error(f"Ошибка сохранения состояния: {e}")
 
-
 def _strip_for_save(d):
     result = {}
     for k, v in d.items():
@@ -85,7 +88,6 @@ def _strip_for_save(d):
         else:
             result[k] = v
     return result
-
 
 def load_state():
     global question_counter, pending_replies, user_carts, active_dialogs
@@ -129,7 +131,6 @@ def load_state():
                 state["item"] = item
                 logger.info(f"Восстановлен item для pending_replies[{uid}]")
 
-
 def cleanup_stale_sessions():
     now = time.time()
     stale = []
@@ -144,14 +145,14 @@ def cleanup_stale_sessions():
     if stale:
         save_state()
 
-
 # === КАТАЛОГ ===
-# ВАЖНО: load_catalog ТОЛЬКО ЧИТАЕТ файл. НИКОГДА не пишет.
-# save_catalog вызывается ТОЛЬКО из админ-действий (добавить/редактировать/удалить).
+CATALOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "catalog.json")
+CATALOG_BACKUP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "catalog_backup.json")
 
-CATALOG_FILE = os.path.join(os.path.dirname(__file__), "catalog.json")
-CATALOG_BACKUP = os.path.join(os.path.dirname(__file__), "catalog_backup.json")
+CATALOG_DATA = load_catalog() if os.path.exists(CATALOG_FILE) else {"categories": []}
 
+# ИСПРАВЛЕНИЕ: Индекс инициализируется ДО вызова rebuild_catalog_index
+CATALOG_INDEX: dict = {}
 
 def load_catalog():
     """ТОЛЬКО ЧТЕНИЕ. Ничего не пишет на диск."""
@@ -169,14 +170,12 @@ def load_catalog():
         logger.error(f"Ошибка в catalog.json: {e}")
         return {"categories": []}
 
-
 def rebuild_catalog_index():
     """Перестраивает индекс товаров из CATALOG_DATA."""
     CATALOG_INDEX.clear()
     for cat in CATALOG_DATA.get("categories", []):
         for item in cat.get("items", []):
             CATALOG_INDEX[item["id"]] = item
-
 
 def save_catalog():
     """Сохраняет каталог. ТОЛЬКО для админ-действий.
@@ -202,15 +201,11 @@ def save_catalog():
         logger.error(f"Ошибка сохранения каталога: {e}")
         return False
 
-
-CATALOG_DATA = load_catalog()
-CATALOG_INDEX: dict = {}
+# Перестройка индекса после загрузки данных
 rebuild_catalog_index()
-
 
 def find_item_by_id(item_id):
     return CATALOG_INDEX.get(item_id)
-
 
 def find_category_by_item_id(item_id):
     """Возвращает (cat_index, item_index) для товара."""
@@ -219,7 +214,6 @@ def find_category_by_item_id(item_id):
             if item["id"] == item_id:
                 return ci, ii
     return None, None
-
 
 # Транслитерация для генерации id
 TRANSLIT = {
@@ -249,10 +243,8 @@ def make_slug(text):
         n += 1
     return base
 
-
 # === FLASK ===
 app = Flask(__name__)
-
 
 # === API MAX ===
 def api_request(method, endpoint, **kwargs):
@@ -260,7 +252,8 @@ def api_request(method, endpoint, **kwargs):
     headers["Authorization"] = TOKEN
     headers["Content-Type"] = "application/json"
     kwargs.setdefault("timeout", 10)
-    kwargs.setdefault("verify", False)
+    # ИСПРАВЛЕНИЕ: Отключено отключение проверки SSL
+    # kwargs.setdefault("verify", False) 
     try:
         resp = requests.request(method, f"{API_URL}{endpoint}", headers=headers, **kwargs)
         logger.info(f"API {method} {endpoint}: status={resp.status_code}")
@@ -268,7 +261,6 @@ def api_request(method, endpoint, **kwargs):
     except requests.RequestException as e:
         logger.error(f"API {method} {endpoint} — ошибка: {e}")
         return None
-
 
 def register_commands():
     commands = [
@@ -287,7 +279,6 @@ def register_commands():
     if resp:
         logger.info(f"Регистрация команд: {resp.text}")
 
-
 def update_webhook_subscription():
     if not WEBHOOK_URL:
         logger.warning("WEBHOOK_URL не задан — пропускаем обновление подписки")
@@ -303,7 +294,6 @@ def update_webhook_subscription():
     if resp:
         logger.info(f"Обновление подписки: {resp.text}")
 
-
 def get_post_seq(post_id):
     resp = api_request("GET", "/messages", params={"message_ids": post_id})
     if resp and resp.status_code == 200:
@@ -313,7 +303,6 @@ def get_post_seq(post_id):
             if seq:
                 return int(seq)
     return None
-
 
 def build_post_link(chat_id, post_id):
     if not chat_id or not post_id:
@@ -325,11 +314,9 @@ def build_post_link(chat_id, post_id):
         return f"https://max.ru/c/{chat_id}/{encoded}"
     return f"https://max.ru/@{CHANNEL_USERNAME}"
 
-
 def get_author_name(message_data):
     from_data = message_data.get("from", {}) or message_data.get("sender", {})
     return from_data.get("first_name") or from_data.get("name") or "Пользователь"
-
 
 def send_message(user_id=None, chat_id=None, text="", attachments=None, keyboard=None):
     params = {}
@@ -354,15 +341,16 @@ def send_message(user_id=None, chat_id=None, text="", attachments=None, keyboard
         logger.info(f"Отправка: {resp.text[:200]}")
     return resp
 
-
 def answer_callback(callback_id, notification=None):
     if not callback_id:
         return
     body = {}
     if notification:
         body["notification"] = notification
-    api_request("POST", "/answers", params={"callback_id": callback_id}, json=body)
-
+    # ИСПРАВЛЕНИЕ: Добавлена проверка ответа от API
+    resp = api_request("POST", "/answers", params={"callback_id": callback_id}, json=body)
+    if not resp or resp.status_code != 200:
+        logger.warning(f"Не удалось ответить на callback {callback_id}")
 
 def post_comment(post_id, text, reply_to_mid=None):
     body = {"text": text}
@@ -370,7 +358,6 @@ def post_comment(post_id, text, reply_to_mid=None):
         body["link"] = {"type": "reply", "mid": reply_to_mid}
     resp = api_request("POST", f"/messages/{post_id}/comments", json=body)
     return resp is not None and resp.status_code == 200
-
 
 # === КЛАВИАТУРЫ ===
 
@@ -386,12 +373,10 @@ def build_main_menu_keyboard():
         ],
     ]
 
-
 def build_catalog_keyboard():
     return [
         [{"type": "message", "text": "\U0001F4CB Каталог", "payload": "\U0001F4CB Каталог"}],
     ]
-
 
 def build_cart_catalog_keyboard():
     return [
@@ -401,18 +386,15 @@ def build_cart_catalog_keyboard():
         ],
     ]
 
-
 def build_cancel_keyboard():
     return [
         [{"type": "callback", "text": "\u274C Отмена", "payload": "cancel_action"}],
     ]
 
-
 def build_back_to_menu_keyboard():
     return [
         [{"type": "message", "text": "\U0001F4CB Главное меню", "payload": "\U0001F4CB Главное меню"}],
     ]
-
 
 def send_welcome(target_id, is_chat=False):
     text = (
@@ -432,10 +414,8 @@ def send_welcome(target_id, is_chat=False):
         keyboard=build_main_menu_keyboard(),
     )
 
-
 def send_main_menu(user_id):
     send_message(user_id=user_id, text="\U0001F447Выберите действие\U0001F447", keyboard=build_main_menu_keyboard())
-
 
 def build_post_keyboard(post_link, post_id=None, comment_mid=None):
     buttons = []
@@ -453,7 +433,6 @@ def build_post_keyboard(post_link, post_id=None, comment_mid=None):
     if not buttons:
         return None
     return [{"type": "inline_keyboard", "payload": {"buttons": buttons}}]
-
 
 # === ОТОБРАЖЕНИЕ ===
 
@@ -479,7 +458,6 @@ def send_product_card(user_id, item):
     ]
     send_message(user_id=user_id, text=text, attachments=attachments, keyboard=keyboard_buttons)
 
-
 def show_catalog(user_id):
     categories = CATALOG_DATA.get("categories", [])
     if not categories:
@@ -489,7 +467,6 @@ def show_catalog(user_id):
     for i, cat in enumerate(categories):
         buttons.append([{"type": "callback", "text": f"\U0001F4E6 {cat['name']}", "payload": f"show_category:{i}"}])
     send_message(user_id=user_id, text="\U0001F6E0 Каталог мастерской Игнатьевых\n\nВыберите категорию:", keyboard=buttons)
-
 
 def show_cart(user_id):
     cart = user_carts.get(str(user_id), [])
@@ -519,7 +496,6 @@ def show_cart(user_id):
     ]
     send_message(user_id=user_id, text=cart_text + "\U0001F447Чтобы продолжить, нажмите кнопку\U0001F447", keyboard=keyboard_buttons)
 
-
 # === ВАЛИДАЦИЯ ===
 def validate_contact(text):
     if not text or len(text.strip()) < 3:
@@ -528,7 +504,6 @@ def validate_contact(text):
     if not phone_match:
         return False, "Не вижу номер телефона. Напишите имя и номер, например: «Иван 89001234567»."
     return True, ""
-
 
 # === АДМИН: КЛАВИАТУРЫ ===
 
@@ -540,7 +515,6 @@ def build_admin_add_keyboard():
         ],
         [{"type": "callback", "text": "\u274C Отмена", "payload": "cancel_action"}],
     ]
-
 
 def build_admin_edit_keyboard():
     return [
@@ -555,7 +529,6 @@ def build_admin_edit_keyboard():
         [{"type": "callback", "text": "\u274C Отмена", "payload": "cancel_action"}],
     ]
 
-
 def build_admin_categories_keyboard(prefix):
     """prefix: 'admin_add_product_cat', 'admin_edit_product_cat', 'admin_del_category', 'admin_del_product_cat'"""
     buttons = []
@@ -563,7 +536,6 @@ def build_admin_categories_keyboard(prefix):
         buttons.append([{"type": "callback", "text": f"\U0001F4E6 {cat['name']}", "payload": f"{prefix}:{i}"}])
     buttons.append([{"type": "callback", "text": "\u274C Отмена", "payload": "cancel_action"}])
     return buttons
-
 
 def build_admin_products_keyboard(cat_index, prefix):
     """prefix: 'admin_edit_product', 'admin_del_product'"""
@@ -573,7 +545,6 @@ def build_admin_products_keyboard(cat_index, prefix):
         buttons.append([{"type": "callback", "text": f"\U0001FA91 {item['name']} — {item['price']} руб.", "payload": f"{prefix}:{cat_index}:{i}"}])
     buttons.append([{"type": "callback", "text": "\u274C Отмена", "payload": "cancel_action"}])
     return buttons
-
 
 def build_admin_product_edit_fields_keyboard(cat_index, item_index):
     return [
@@ -591,7 +562,6 @@ def build_admin_product_edit_fields_keyboard(cat_index, item_index):
         [{"type": "callback", "text": "\u274C Отмена", "payload": "cancel_action"}],
     ]
 
-
 # === АДМИН: КОМАНДЫ ===
 
 def admin_show_catalog(user_id):
@@ -607,7 +577,6 @@ def admin_show_catalog(user_id):
         for item in cat.get("items", []):
             lines.append(f"  \u2022 {item['name']} — {item['price']} руб. (id: {item['id']})")
     send_message(user_id=user_id, text="\n".join(lines))
-
 
 def admin_export_catalog(user_id):
     """Отправляет содержимое catalog.json одним сообщением для копирования."""
@@ -644,7 +613,6 @@ def admin_export_catalog(user_id):
     except FileNotFoundError:
         send_message(user_id=user_id, text="\u26A0\uFE0F catalog.json не найден на сервере.")
 
-
 def _strip_markdown(text):
     """Убирает markdown-обёртку ```json ... ``` или ``` ... ``` из текста."""
     text = text.strip()
@@ -658,7 +626,6 @@ def _strip_markdown(text):
             lines = lines[:-1]
         text = "\n".join(lines).strip()
     return text
-
 
 def admin_import_catalog(user_id):
     """Запускает режим импорта — ждёт текст catalog.json от админа (можно по частям)."""
@@ -680,7 +647,6 @@ def admin_import_catalog(user_id):
             "timestamp": time.time(),
         }
         save_state()
-
 
 # === CALLBACK ОБРАБОТКА ===
 
@@ -730,7 +696,11 @@ def handle_callback(data):
 
     # --- show_category:<index> ---
     if payload.startswith("show_category:"):
-        cat_index = int(payload.split(":", 1)[1])
+        try:
+            cat_index = int(payload.split(":", 1)[1])
+        except (ValueError, IndexError):
+            answer_callback(callback_id, "Ошибка: неверный индекс категории")
+            return jsonify({"ok": True}), 200
         categories = CATALOG_DATA.get("categories", [])
         if cat_index < len(categories):
             category = categories[cat_index]
@@ -855,7 +825,7 @@ def handle_callback(data):
         return jsonify({"ok": True}), 200
 
     # ========================
-    # === АДМИН CALLBACK'и ===
+    # === АДМИН CALLBACK'И ===
     # ========================
     if not is_admin(sender_id):
         answer_callback(callback_id, "Нет доступа")
@@ -882,7 +852,11 @@ def handle_callback(data):
 
     # --- admin_add_product_cat:<index> ---
     if payload.startswith("admin_add_product_cat:"):
-        cat_index = int(payload.split(":", 1)[1])
+        try:
+            cat_index = int(payload.split(":", 1)[1])
+        except (ValueError, IndexError):
+            answer_callback(callback_id, "Ошибка: неверный формат")
+            return jsonify({"ok": True}), 200
         cat = CATALOG_DATA["categories"][cat_index]
         answer_callback(callback_id, f"Категория: {cat['name']}")
         send_message(user_id=sender_id, text="\U0001F4DD Напишите название изделия:", keyboard=build_cancel_keyboard())
@@ -903,7 +877,11 @@ def handle_callback(data):
 
     # --- admin_edit_category:<index> ---
     if payload.startswith("admin_edit_category:"):
-        cat_index = int(payload.split(":", 1)[1])
+        try:
+            cat_index = int(payload.split(":", 1)[1])
+        except (ValueError, IndexError):
+            answer_callback(callback_id, "Ошибка: неверный формат")
+            return jsonify({"ok": True}), 200
         cat = CATALOG_DATA["categories"][cat_index]
         answer_callback(callback_id, f"Редактируем: {cat['name']}")
         send_message(user_id=sender_id, text=f"\u270F\uFE0F Текущее название: {cat['name']}\n\nНапишите новое название:", keyboard=build_cancel_keyboard())
@@ -924,7 +902,11 @@ def handle_callback(data):
 
     # --- admin_edit_product_cat:<index> ---
     if payload.startswith("admin_edit_product_cat:"):
-        cat_index = int(payload.split(":", 1)[1])
+        try:
+            cat_index = int(payload.split(":", 1)[1])
+        except (ValueError, IndexError):
+            answer_callback(callback_id, "Ошибка: неверный формат")
+            return jsonify({"ok": True}), 200
         cat = CATALOG_DATA["categories"][cat_index]
         answer_callback(callback_id, f"Категория: {cat['name']}")
         if not cat.get("items"):
@@ -936,37 +918,52 @@ def handle_callback(data):
     # --- admin_edit_product:<cat_index>:<item_index> ---
     if payload.startswith("admin_edit_product:"):
         parts = payload.split(":", 2)
-        cat_index, item_index = int(parts[1]), int(parts[2])
-        item = CATALOG_DATA["categories"][cat_index]["items"][item_index]
-        answer_callback(callback_id, f"Редактируем: {item['name']}")
-        text = (
-            f"\u270F\uFE0F Редактирование товара\n\n"
-            f"\U0001FA91 {item['name']}\n"
-            f"\U0001F4B0 Цена: {item['price']} руб.\n"
-            f"\U0001F4DD {item.get('description', '')}\n"
-            f"\U0001F4D8 Фото: {'есть' if item.get('photo_url') else 'нет'}\n"
-            f"\U0001F194 id: {item['id']}\n\n"
-            f"Что изменить?"
-        )
-        send_message(user_id=sender_id, text=text, keyboard=build_admin_product_edit_fields_keyboard(cat_index, item_index))
+        if len(parts) == 3:
+            try:
+                cat_index, item_index = int(parts[1]), int(parts[2])
+            except ValueError:
+                answer_callback(callback_id, "Ошибка: неверный формат")
+                return jsonify({"ok": True}), 200
+            item = CATALOG_DATA["categories"][cat_index]["items"][item_index]
+            answer_callback(callback_id, f"Редактируем: {item['name']}")
+            text = (
+                f"\u270F\uFE0F Редактирование товара\n\n"
+                f"\U0001FA91 {item['name']}\n"
+                f"\U0001F4B0 Цена: {item['price']} руб.\n"
+                f"\U0001F4DD {item.get('description', '')}\n"
+                f"\U0001F4D8 Фото: {'есть' if item.get('photo_url') else 'нет'}\n"
+                f"\U0001F194 id: {item['id']}\n\n"
+                f"Что изменить?"
+            )
+            send_message(user_id=sender_id, text=text, keyboard=build_admin_product_edit_fields_keyboard(cat_index, item_index))
+        else:
+            answer_callback(callback_id, "Ошибка: неверный формат")
         return jsonify({"ok": True}), 200
 
     # --- admin_edit_field:<cat_index>:<item_index>:<field> ---
     if payload.startswith("admin_edit_field:"):
         parts = payload.split(":", 3)
-        cat_index, item_index, field = int(parts[1]), int(parts[2]), parts[3]
-        item = CATALOG_DATA["categories"][cat_index]["items"][item_index]
-        field_names = {"name": "название", "price": "цену (только число, в рублях)", "description": "описание", "photo_url": "ссылку на фото (или «нет» чтобы убрать)"}
-        answer_callback(callback_id, f"Изменяем: {field_names.get(field, field)}")
-        current = item.get(field, "")
-        send_message(
-            user_id=sender_id,
-            text=f"\u270F\uFE0F Изменение: {field_names.get(field, field)}\n\nТекущее значение: {current}\n\n\U0001F4DD Напишите новое значение:",
-            keyboard=build_cancel_keyboard(),
-        )
-        with _lock:
-            pending_replies[sender_id] = {"step": "admin_edit_field_value", "cat_index": cat_index, "item_index": item_index, "field": field, "timestamp": time.time()}
-            save_state()
+        if len(parts) == 4:
+            try:
+                cat_index, item_index = int(parts[1]), int(parts[2])
+            except ValueError:
+                answer_callback(callback_id, "Ошибка: неверный формат")
+                return jsonify({"ok": True}), 200
+            field = parts[3]
+            item = CATALOG_DATA["categories"][cat_index]["items"][item_index]
+            field_names = {"name": "название", "price": "цену (только число, в рублях)", "description": "описание", "photo_url": "ссылку на фото (или «нет» чтобы убрать)"}
+            answer_callback(callback_id, f"Изменяем: {field_names.get(field, field)}")
+            current = item.get(field, "")
+            send_message(
+                user_id=sender_id,
+                text=f"\u270F\uFE0F Изменение: {field_names.get(field, field)}\n\nТекущее значение: {current}\n\n\U0001F4DD Напишите новое значение:",
+                keyboard=build_cancel_keyboard(),
+            )
+            with _lock:
+                pending_replies[sender_id] = {"step": "admin_edit_field_value", "cat_index": cat_index, "item_index": item_index, "field": field, "timestamp": time.time()}
+                save_state()
+        else:
+            answer_callback(callback_id, "Ошибка: неверный формат")
         return jsonify({"ok": True}), 200
 
     # --- admin_del_category_start ---
@@ -981,7 +978,11 @@ def handle_callback(data):
 
     # --- admin_del_category:<index> ---
     if payload.startswith("admin_del_category:"):
-        cat_index = int(payload.split(":", 1)[1])
+        try:
+            cat_index = int(payload.split(":", 1)[1])
+        except (ValueError, IndexError):
+            answer_callback(callback_id, "Ошибка: неверный формат")
+            return jsonify({"ok": True}), 200
         cat = CATALOG_DATA["categories"][cat_index]
         answer_callback(callback_id, f"Удаляем: {cat['name']}")
         send_message(
@@ -996,11 +997,16 @@ def handle_callback(data):
 
     # --- admin_del_category_confirm:<index> ---
     if payload.startswith("admin_del_category_confirm:"):
-        cat_index = int(payload.split(":", 1)[1])
+        try:
+            cat_index = int(payload.split(":", 1)[1])
+        except (ValueError, IndexError):
+            answer_callback(callback_id, "Ошибка: неверный формат")
+            return jsonify({"ok": True}), 200
         cat = CATALOG_DATA["categories"][cat_index]
         answer_callback(callback_id, "Удалено")
-        del CATALOG_DATA["categories"][cat_index]
-        save_catalog()
+        with _lock:
+            del CATALOG_DATA["categories"][cat_index]
+            save_catalog()
         send_message(user_id=sender_id, text=f"\u2705 Категория «{cat['name']}» удалена.", keyboard=build_admin_edit_keyboard())
         return jsonify({"ok": True}), 200
 
@@ -1016,7 +1022,11 @@ def handle_callback(data):
 
     # --- admin_del_product_cat:<index> ---
     if payload.startswith("admin_del_product_cat:"):
-        cat_index = int(payload.split(":", 1)[1])
+        try:
+            cat_index = int(payload.split(":", 1)[1])
+        except (ValueError, IndexError):
+            answer_callback(callback_id, "Ошибка: неверный формат")
+            return jsonify({"ok": True}), 200
         cat = CATALOG_DATA["categories"][cat_index]
         answer_callback(callback_id, f"Категория: {cat['name']}")
         if not cat.get("items"):
@@ -1028,33 +1038,47 @@ def handle_callback(data):
     # --- admin_del_product:<cat_index>:<item_index> ---
     if payload.startswith("admin_del_product:") and not payload.startswith("admin_del_product_cat:") and not payload.startswith("admin_del_product_confirm:"):
         parts = payload.split(":", 2)
-        cat_index, item_index = int(parts[1]), int(parts[2])
-        item = CATALOG_DATA["categories"][cat_index]["items"][item_index]
-        answer_callback(callback_id, f"Удаляем: {item['name']}")
-        send_message(
-            user_id=sender_id,
-            text=f"\u26A0\uFE0F Удалить товар «{item['name']}»?",
-            keyboard=[
-                [{"type": "callback", "text": "\u2705 Да, удалить", "payload": f"admin_del_product_confirm:{cat_index}:{item_index}"}],
-                [{"type": "callback", "text": "\u274C Отмена", "payload": "cancel_action"}],
-            ],
-        )
+        if len(parts) == 3:
+            try:
+                cat_index, item_index = int(parts[1]), int(parts[2])
+            except ValueError:
+                answer_callback(callback_id, "Ошибка: неверный формат")
+                return jsonify({"ok": True}), 200
+            item = CATALOG_DATA["categories"][cat_index]["items"][item_index]
+            answer_callback(callback_id, f"Удаляем: {item['name']}")
+            send_message(
+                user_id=sender_id,
+                text=f"\u26A0\uFE0F Удалить товар «{item['name']}»?",
+                keyboard=[
+                    [{"type": "callback", "text": "\u2705 Да, удалить", "payload": f"admin_del_product_confirm:{cat_index}:{item_index}"}],
+                    [{"type": "callback", "text": "\u274C Отмена", "payload": "cancel_action"}],
+                ],
+            )
+        else:
+            answer_callback(callback_id, "Ошибка: неверный формат")
         return jsonify({"ok": True}), 200
 
     # --- admin_del_product_confirm:<cat_index>:<item_index> ---
     if payload.startswith("admin_del_product_confirm:"):
         parts = payload.split(":", 2)
-        cat_index, item_index = int(parts[1]), int(parts[2])
-        item = CATALOG_DATA["categories"][cat_index]["items"][item_index]
-        answer_callback(callback_id, "Удалено")
-        del CATALOG_DATA["categories"][cat_index]["items"][item_index]
-        save_catalog()
-        send_message(user_id=sender_id, text=f"\u2705 Товар «{item['name']}» удалён.", keyboard=build_admin_edit_keyboard())
+        if len(parts) == 3:
+            try:
+                cat_index, item_index = int(parts[1]), int(parts[2])
+            except ValueError:
+                answer_callback(callback_id, "Ошибка: неверный формат")
+                return jsonify({"ok": True}), 200
+            item = CATALOG_DATA["categories"][cat_index]["items"][item_index]
+            answer_callback(callback_id, "Удалено")
+            with _lock:
+                del CATALOG_DATA["categories"][cat_index]["items"][item_index]
+                save_catalog()
+            send_message(user_id=sender_id, text=f"\u2705 Товар «{item['name']}» удалён.", keyboard=build_admin_edit_keyboard())
+        else:
+            answer_callback(callback_id, "Ошибка: неверный формат")
         return jsonify({"ok": True}), 200
 
     answer_callback(callback_id, "Ок")
     return jsonify({"ok": True}), 200
-
 
 # === АДМИН: ОБРАБОТКА ТЕКСТОВЫХ ШАГОВ ===
 
@@ -1086,9 +1110,9 @@ def handle_admin_steps(sender_id, text):
             if cat["name"].lower() == name.lower():
                 send_message(user_id=sender_id, text=f"\u26A0\uFE0F Категория «{name}» уже существует. Напишите другое название:")
                 return True
-        CATALOG_DATA.setdefault("categories", []).append({"name": name, "items": []})
-        save_catalog()
         with _lock:
+            CATALOG_DATA.setdefault("categories", []).append({"name": name, "items": []})
+            save_catalog()
             del pending_replies[sender_id]
             save_state()
         send_message(
@@ -1161,9 +1185,9 @@ def handle_admin_steps(sender_id, text):
             "description": desc,
             "photo_url": photo,
         }
-        CATALOG_DATA["categories"][cat_index].setdefault("items", []).append(item)
-        save_catalog()
         with _lock:
+            CATALOG_DATA["categories"][cat_index].setdefault("items", []).append(item)
+            save_catalog()
             del pending_replies[sender_id]
             save_state()
         # Превью
@@ -1183,9 +1207,9 @@ def handle_admin_steps(sender_id, text):
             return True
         cat_index = state["cat_index"]
         old_name = CATALOG_DATA["categories"][cat_index]["name"]
-        CATALOG_DATA["categories"][cat_index]["name"] = name
-        save_catalog()
         with _lock:
+            CATALOG_DATA["categories"][cat_index]["name"] = name
+            save_catalog()
             del pending_replies[sender_id]
             save_state()
         send_message(
@@ -1219,9 +1243,9 @@ def handle_admin_steps(sender_id, text):
             value = ""
 
         old_value = item.get(field, "")
-        item[field] = value
-        save_catalog()
         with _lock:
+            item[field] = value
+            save_catalog()
             del pending_replies[sender_id]
             save_state()
 
@@ -1252,25 +1276,19 @@ def handle_admin_steps(sender_id, text):
                 data = json.loads(full_text)
                 if not isinstance(data, dict) or "categories" not in data:
                     raise ValueError("Нет ключа 'categories'")
-                CATALOG_DATA.clear()
-                CATALOG_DATA.update(data)
-                ok = save_catalog()
-                if ok:
-                    with _lock:
-                        del pending_replies[sender_id]
-                        save_state()
-                    cats = data.get("categories", [])
-                    total = sum(len(c.get("items", [])) for c in cats)
-                    send_message(
-                        user_id=sender_id,
-                        text=f"\u2705 Каталог импортирован!\n\nКатегорий: {len(cats)}\nТоваров: {total}",
-                        keyboard=build_main_menu_keyboard(),
-                    )
-                else:
-                    send_message(
-                        user_id=sender_id,
-                        text="\u26A0\uFE0F Не удалось сохранить каталог. Проверьте данные.",
-                    )
+                with _lock:
+                    CATALOG_DATA.clear()
+                    CATALOG_DATA.update(data)
+                    save_catalog()
+                    del pending_replies[sender_id]
+                    save_state()
+                cats = data.get("categories", [])
+                total = sum(len(c.get("items", [])) for c in cats)
+                send_message(
+                    user_id=sender_id,
+                    text=f"\u2705 Каталог импортирован!\n\nКатегорий: {len(cats)}\nТоваров: {total}",
+                    keyboard=build_main_menu_keyboard(),
+                )
             except (json.JSONDecodeError, ValueError) as e:
                 send_message(
                     user_id=sender_id,
@@ -1295,21 +1313,20 @@ def handle_admin_steps(sender_id, text):
         try:
             data = json.loads(full_text)
             if isinstance(data, dict) and "categories" in data:
-                CATALOG_DATA.clear()
-                CATALOG_DATA.update(data)
-                ok = save_catalog()
-                if ok:
-                    with _lock:
-                        del pending_replies[sender_id]
-                        save_state()
-                    cats = data.get("categories", [])
-                    total = sum(len(c.get("items", [])) for c in cats)
-                    send_message(
-                        user_id=sender_id,
-                        text=f"\u2705 Каталог импортирован!\n\nКатегорий: {len(cats)}\nТоваров: {total}",
-                        keyboard=build_main_menu_keyboard(),
-                    )
-                    return True
+                with _lock:
+                    CATALOG_DATA.clear()
+                    CATALOG_DATA.update(data)
+                    save_catalog()
+                    del pending_replies[sender_id]
+                    save_state()
+                cats = data.get("categories", [])
+                total = sum(len(c.get("items", [])) for c in cats)
+                send_message(
+                    user_id=sender_id,
+                    text=f"\u2705 Каталог импортирован!\n\nКатегорий: {len(cats)}\nТоваров: {total}",
+                    keyboard=build_main_menu_keyboard(),
+                )
+                return True
         except (json.JSONDecodeError, ValueError):
             pass  # Не полный JSON — ждём дальше
 
@@ -1325,7 +1342,6 @@ def handle_admin_steps(sender_id, text):
 
     return False
 
-
 # === ОБРАБОТКА СООБЩЕНИЙ ===
 
 def handle_admin_reply(sender_id, text):
@@ -1333,21 +1349,20 @@ def handle_admin_reply(sender_id, text):
     if match:
         num = int(match.group(1))
         reply_text = match.group(2).strip()
-        if num in active_dialogs:
-            client_user_id = active_dialogs[num]["user_id"]
-            send_message(user_id=client_user_id, text=reply_text)
-            send_message(user_id=client_user_id, text="\U0001F447Главное меню\U0001F447", keyboard=build_main_menu_keyboard())
-            send_message(user_id=sender_id, text=f"\u2705 Ответ #{num} отправлен клиенту.")
-            logger.info(f"Ответ #{num} отправлен user_id={client_user_id}")
-            with _lock:
+        with _lock:
+            if num in active_dialogs:
+                client_user_id = active_dialogs[num]["user_id"]
+                send_message(user_id=client_user_id, text=reply_text)
+                send_message(user_id=client_user_id, text="\U0001F447Главное меню\U0001F447", keyboard=build_main_menu_keyboard())
+                send_message(user_id=sender_id, text=f"\u2705 Ответ #{num} отправлен клиенту.")
+                logger.info(f"Ответ #{num} отправлен user_id={client_user_id}")
                 del active_dialogs[num]
                 save_state()
-        else:
-            active_nums = list(active_dialogs.keys())
-            send_message(user_id=sender_id, text=f"\u26A0\uFE0F Диалог #{num} не найден. Активные: {active_nums}")
+            else:
+                active_nums = list(active_dialogs.keys())
+                send_message(user_id=sender_id, text=f"\u26A0\uFE0F Диалог #{num} не найден. Активные: {active_nums}")
         return True
     return False
-
 
 def handle_pending_state(sender_id, text):
     state = pending_replies.get(sender_id)
@@ -1496,28 +1511,27 @@ def handle_pending_state(sender_id, text):
 
     return False
 
-
 def handle_pending_reply_comment(sender_id, text):
     state = pending_replies.get(sender_id)
-    if isinstance(state, dict) and "post_id" in state:
-        with _lock:
+    with _lock:
+        if isinstance(state, dict) and "post_id" in state:
             reply_data = pending_replies.pop(sender_id, None)
             save_state()
-        if not reply_data:
-            return True
-        post_id = reply_data["post_id"]
-        comment_mid = reply_data["comment_mid"]
-        success = post_comment(post_id, text, reply_to_mid=comment_mid)
-        if success:
-            send_message(user_id=sender_id, text="\u2705 Ответ отправлен в канал!", keyboard=build_main_menu_keyboard())
         else:
-            send_message(user_id=sender_id, text="\u274C Не удалось отправить ответ. Проверьте, что бот — администратор канала.", keyboard=build_main_menu_keyboard())
-            with _lock:
-                pending_replies[sender_id] = reply_data
-                save_state()
-        return True
-    return False
-
+            reply_data = None
+    if not reply_data:
+        return False
+    post_id = reply_data["post_id"]
+    comment_mid = reply_data["comment_mid"]
+    success = post_comment(post_id, text, reply_to_mid=comment_mid)
+    if success:
+        send_message(user_id=sender_id, text="\u2705 Ответ отправлен в канал!", keyboard=build_main_menu_keyboard())
+    else:
+        send_message(user_id=sender_id, text="\u274C Не удалось отправить ответ. Проверьте, что бот — администратор канала.", keyboard=build_main_menu_keyboard())
+        with _lock:
+            pending_replies[sender_id] = reply_data
+            save_state()
+    return True
 
 def handle_message_created(data):
     global question_counter
@@ -1528,130 +1542,126 @@ def handle_message_created(data):
     logger.info(f"Сообщение от user_id={sender_id}: {text}")
     cmd = text.lower().strip() if text else ""
 
-    # Перехват ответов админа
-    if is_admin(sender_id) and text and not text.startswith("/"):
-        if handle_admin_reply(sender_id, text):
-            return
+    # ИСПРАВЛЕНИЕ: Оборачиваем обработку в блокировку для предотвращения гонок
+    with _lock:
+        # Перехват ответов админа
+        if is_admin(sender_id) and text and not text.startswith("/"):
+            if handle_admin_reply(sender_id, text):
+                return
 
-    # Команда /cancel
-    if cmd in ["/cancel", "/отмена"]:
-        with _lock:
+        # Команда /cancel
+        if cmd in ["/cancel", "/отмена"]:
             had = pending_replies.pop(sender_id, None)
             if had:
                 save_state()
-        if had:
-            send_message(user_id=sender_id, text="\u274C Действие отменено.", keyboard=build_main_menu_keyboard())
-        else:
-            send_message(user_id=sender_id, text="Нечего отменять.", keyboard=build_main_menu_keyboard())
-        return
-
-    # Админ-команды
-    if is_admin(sender_id):
-        if cmd == "/добавить":
-            send_message(user_id=sender_id, text="\U0001F527 Режим добавления в каталог\n\nЧто добавляем?", keyboard=build_admin_add_keyboard())
-            return
-        if cmd == "/редактировать":
-            send_message(user_id=sender_id, text="\u270F\uFE0F Редактирование каталога\n\nЧто делаем?", keyboard=build_admin_edit_keyboard())
-            return
-        if cmd == "/каталог_админ":
-            admin_show_catalog(sender_id)
-            return
-        if cmd == "/экспорт":
-            admin_export_catalog(sender_id)
-            return
-        if cmd == "/импорт":
-            admin_import_catalog(sender_id)
+            if had:
+                send_message(user_id=sender_id, text="\u274C Действие отменено.", keyboard=build_main_menu_keyboard())
+            else:
+                send_message(user_id=sender_id, text="Нечего отменять.", keyboard=build_main_menu_keyboard())
             return
 
-    # Кнопки главного меню — очищаем pending state
-    if text and text.strip() == "\U0001F4CB Каталог":
-        with _lock:
+        # Админ-команды
+        if is_admin(sender_id):
+            if cmd == "/добавить":
+                send_message(user_id=sender_id, text="\U0001F527 Режим добавления в каталог\n\nЧто добавляем?", keyboard=build_admin_add_keyboard())
+                return
+            if cmd == "/редактировать":
+                send_message(user_id=sender_id, text="\u270F\uFE0F Редактирование каталога\n\nЧто делаем?", keyboard=build_admin_edit_keyboard())
+                return
+            if cmd == "/каталог_админ":
+                admin_show_catalog(sender_id)
+                return
+            if cmd == "/экспорт":
+                admin_export_catalog(sender_id)
+                return
+            if cmd == "/импорт":
+                admin_import_catalog(sender_id)
+                return
+
+        # Кнопки главного меню — очищаем pending state
+        if text and text.strip() == "\U0001F4CB Каталог":
             if sender_id in pending_replies:
                 del pending_replies[sender_id]
                 save_state()
-        show_catalog(sender_id)
-        return
-    if text and text.strip() == "\U0001F6D2 Корзина":
-        with _lock:
+            show_catalog(sender_id)
+            return
+        if text and text.strip() == "\U0001F6D2 Корзина":
             if sender_id in pending_replies:
                 del pending_replies[sender_id]
                 save_state()
-        show_cart(sender_id)
-        return
-    if text and text.strip() == "\U0001F4DE Мастер":
-        with _lock:
+            show_cart(sender_id)
+            return
+        if text and text.strip() == "\U0001F4DE Мастер":
             if sender_id in pending_replies:
                 del pending_replies[sender_id]
                 save_state()
-        send_message(
-            user_id=sender_id,
-            text="\U0001F4DE Мастер:\n\nЕвгений\n\u260E\uFE0F 8 (989) 622-37-32\n\n\U0001F449 Или закажите через «\U0001F4CB Каталог»",
-            keyboard=build_catalog_keyboard(),
-        )
-        return
-    if text and text.strip() == "\u2753 Задать вопрос":
-        with _lock:
+            send_message(
+                user_id=sender_id,
+                text="\U0001F4DE Мастер:\n\nЕвгений\n\n\u260E\uFE0F 8 (989) 622-37-32\n\n\U0001F449 Или закажите через «\U0001F4CB Каталог»",
+                keyboard=build_catalog_keyboard(),
+            )
+            return
+        if text and text.strip() == "\u2753 Задать вопрос":
             if sender_id in pending_replies:
                 del pending_replies[sender_id]
                 save_state()
             pending_replies[sender_id] = {"step": "waiting_question", "first_name": first_name, "timestamp": time.time()}
             save_state()
-        send_message(user_id=sender_id, text="\U0001F4AC Напишите ваш вопрос прямо здесь.\n\nМастер увидит его сразу и ответит в течение 30 минут.", keyboard=build_cancel_keyboard())
-        return
-
-    # Текстовые команды
-    if cmd in ["/catalog", "/каталог"]:
-        show_catalog(sender_id)
-        return
-    if cmd in ["/cart", "/корзина"]:
-        show_cart(sender_id)
-        return
-    if cmd in ["/help", "/помощь"]:
-        send_message(
-            user_id=sender_id,
-            text="\U0001FAB5 Мастерская Игнатьевых — помощь\n\n\U0001F4CB /каталог — открыть каталог\n\U0001F6D2 /корзина — посмотреть корзину\n\u2753 /помощь — эта справка\n\U0001F4A1 /cancel — отменить текущее действие\n\nТакже можно нажимать кнопки под сообщениями бота.",
-            keyboard=build_main_menu_keyboard(),
-        )
-        return
-
-    # /вопросы — только для админа
-    if cmd == "/вопросы" and is_admin(sender_id):
-        if active_dialogs:
-            lines = []
-            for num, d in sorted(active_dialogs.items()):
-                item_info = f" (\U0001F4E6 {d['item_name']})" if d.get("item_name") else ""
-                preview = d["text"][:60] + ("..." if len(d["text"]) > 60 else "")
-                lines.append(f"#{num} — {d['name']}{item_info}: {preview}")
-            send_message(user_id=sender_id, text="\U0001F4CB Активные диалоги:\n\n" + "\n".join(lines))
-        else:
-            send_message(user_id=sender_id, text="Нет активных диалогов.")
-        return
-
-    # Обработка шагов
-    if sender_id in pending_replies:
-        state = pending_replies.get(sender_id)
-        if isinstance(state, dict) and "first_name" not in state and "step" in state:
-            state["first_name"] = first_name
-
-        # Сначала админ-шаги
-        if is_admin(sender_id) and handle_admin_steps(sender_id, text):
+            send_message(user_id=sender_id, text="\U0001F4AC Напишите ваш вопрос прямо здесь.\n\nМастер увидит его сразу и ответит в течение 30 минут.", keyboard=build_cancel_keyboard())
             return
 
-        if handle_pending_state(sender_id, text):
+        # Текстовые команды
+        if cmd in ["/catalog", "/каталог"]:
+            show_catalog(sender_id)
+            return
+        if cmd in ["/cart", "/корзина"]:
+            show_cart(sender_id)
+            return
+        if cmd in ["/help", "/помощь"]:
+            send_message(
+                user_id=sender_id,
+                text="\U0001FAB5 Мастерская Игнатьевых — помощь\n\n\U0001F4CB /каталог — открыть каталог\n\U0001F6D2 /корзина — посмотреть корзину\n\u2753 /помощь — эта справка\n\U0001F4A1 /cancel — отменить текущее действие\n\nТакже можно нажимать кнопки под сообщениями бота.",
+                keyboard=build_main_menu_keyboard(),
+            )
             return
 
-        if text and not text.startswith("/"):
-            if handle_pending_reply_comment(sender_id, text):
+        # /вопросы — только для админа
+        if cmd == "/вопросы" and is_admin(sender_id):
+            if active_dialogs:
+                lines = []
+                for num, d in sorted(active_dialogs.items()):
+                    item_info = f" (\U0001F4E6 {d['item_name']})" if d.get("item_name") else ""
+                    preview = d["text"][:60] + ("..." if len(d["text"]) > 60 else "")
+                    lines.append(f"#{num} — {d['name']}{item_info}: {preview}")
+                send_message(user_id=sender_id, text="\U0001F4CB Активные диалоги:\n\n" + "\n".join(lines))
+            else:
+                send_message(user_id=sender_id, text="Нет активных диалогов.")
+            return
+
+        # Обработка шагов
+        if sender_id in pending_replies:
+            state = pending_replies.get(sender_id)
+            if isinstance(state, dict) and "first_name" not in state and "step" in state:
+                state["first_name"] = first_name
+
+            # Сначала админ-шаги
+            if is_admin(sender_id) and handle_admin_steps(sender_id, text):
                 return
 
-    # /start
-    if cmd and cmd.startswith("/start"):
-        send_welcome(sender_id)
-        return
+            if handle_pending_state(sender_id, text):
+                return
 
-    # Fallback
-    send_message(user_id=sender_id, text="Я не совсем понял сообщение.\n\n\U0001F447Выберите действие\U0001F447", keyboard=build_main_menu_keyboard())
+            if text and not text.startswith("/"):
+                if handle_pending_reply_comment(sender_id, text):
+                    return
 
+        # /start
+        if cmd and cmd.startswith("/start"):
+            send_welcome(sender_id)
+            return
+
+        # Fallback
+        send_message(user_id=sender_id, text="Я не совсем понял сообщение.\n\n\U0001F447Выберите действие\U0001F447", keyboard=build_main_menu_keyboard())
 
 # === WEBHOOK ===
 
@@ -1665,6 +1675,11 @@ def webhook():
         if not hmac.compare_digest(received_secret, WEBHOOK_SECRET):
             logger.warning("Неверный секрет webhook")
             return jsonify({"error": "forbidden"}), 403
+    else:
+        # ИСПРАВЛЕНИЕ: Если секрет не задан, отказываемся от работы (т.к. он теперь обязателен)
+        # Это предотвращает обработку поддельных вебхуков
+        logger.error("WEBHOOK_SECRET не задан, но требуется для безопасности. Запрос отклонен.")
+        return jsonify({"error": "forbidden"}), 403
 
     data = request.get_json()
     if not data:
@@ -1727,7 +1742,6 @@ def webhook():
 
     return jsonify({"ok": True}), 200
 
-
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({
@@ -1737,7 +1751,6 @@ def index():
         "pending_replies": len(pending_replies),
         "carts": len(user_carts),
     }), 200
-
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -1749,13 +1762,11 @@ def health():
         "catalog_items": len(CATALOG_INDEX),
     }), 200
 
-
 # === ИНИЦИАЛИЗАЦИЯ ===
 # ВНИМАНИЕ: здесь НЕТ вызова save_catalog() — каталог не перезаписывается при запуске.
 load_state()
 register_commands()
 update_webhook_subscription()
-
 
 # === GRACEFUL SHUTDOWN ===
 def on_shutdown(signum, frame):
@@ -1764,10 +1775,8 @@ def on_shutdown(signum, frame):
     logger.info("Состояние сохранено. Завершаю работу.")
     os._exit(0)
 
-
 signal.signal(signal.SIGTERM, on_shutdown)
 signal.signal(signal.SIGINT, on_shutdown)
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
