@@ -32,78 +32,80 @@ SESSION_TIMEOUT = 600  # 10 минут
 STATE_DIR = os.path.join(os.path.dirname(__file__), "state")
 os.makedirs(STATE_DIR, exist_ok=True)
 
-# === S3 / Yandex Object Storage ===
+# === S3 (Yandex Object Storage) ===
 S3_ACCESS_KEY = os.environ.get("YANDEX_S3_ACCESS_KEY", "")
 S3_SECRET_KEY = os.environ.get("YANDEX_S3_SECRET_KEY", "")
 S3_BUCKET = os.environ.get("YANDEX_S3_BUCKET", "")
 S3_CATALOG_KEY = "catalog.json"
 S3_ENABLED = bool(S3_ACCESS_KEY and S3_SECRET_KEY and S3_BUCKET)
-S3_CLIENT = None
 
+s3_client = None
 if S3_ENABLED:
     try:
         import boto3
-        S3_CLIENT = boto3.client(
+        from botocore.config import Config
+        s3_client = boto3.client(
             "s3",
             endpoint_url="https://storage.yandexcloud.net",
             aws_access_key_id=S3_ACCESS_KEY,
             aws_secret_access_key=S3_SECRET_KEY,
             region_name="ru-central1",
+            config=Config(signature_version="s3"),
         )
-        logger.info("S3 клиент инициализирован (Yandex Object Storage)")
-    except ImportError:
-        logger.warning("boto3 не установлен — S3 недоступен. Установите: pip install boto3")
-        S3_ENABLED = False
+        logger.info(f"S3 инициализирован: bucket={S3_BUCKET}")
     except Exception as e:
-        logger.warning(f"Не удалось инициализировать S3: {e}")
+        logger.error(f"Не удалось инициализировать S3: {e}")
         S3_ENABLED = False
 
 
 def s3_upload_catalog():
-    """Загружает catalog.json в S3."""
-    if not S3_ENABLED or not S3_CLIENT:
-        return False
+    """Загружает catalog.json в Yandex Object Storage."""
+    if not S3_ENABLED or not s3_client:
+        return False, "S3 не настроен"
     try:
-        S3_CLIENT.put_object(
+        with open(CATALOG_FILE, "r", encoding="utf-8") as f:
+            raw = f.read()
+        s3_client.put_object(
             Bucket=S3_BUCKET,
             Key=S3_CATALOG_KEY,
-            Data=json.dumps(CATALOG_DATA, ensure_ascii=False, indent=2).encode("utf-8"),
-            ContentType="application/json",
+            Body=raw.encode("utf-8"),
+            ContentType="application/json; charset=utf-8",
         )
-        logger.info("Каталог загружен в S3")
-        return True
+        logger.info(f"Каталог загружен в S3: bucket={S3_BUCKET}, key={S3_CATALOG_KEY}")
+        return True, ""
     except Exception as e:
         logger.error(f"Ошибка загрузки каталога в S3: {e}")
-        return False
+        return False, str(e)
 
 
 def s3_download_catalog():
-    """Скачивает catalog.json из S3. Возвращает dict или None."""
-    if not S3_ENABLED or not S3_CLIENT:
+    """Скачивает catalog.json из Yandex Object Storage. Возвращает dict или None."""
+    if not S3_ENABLED or not s3_client:
         return None
     try:
-        resp = S3_CLIENT.get_object(Bucket=S3_BUCKET, Key=S3_CATALOG_KEY)
-        data = json.loads(resp["Body"].read().decode("utf-8"))
-        logger.info("Каталог скачан из S3")
-        return data
+        resp = s3_client.get_object(Bucket=S3_BUCKET, Key=S3_CATALOG_KEY)
+        data = resp["Body"].read().decode("utf-8")
+        parsed = json.loads(data)
+        logger.info(f"Каталог скачан из S3: bucket={S3_BUCKET}")
+        return parsed
     except Exception as e:
-        logger.warning(f"Не удалось скачать каталог из S3: {e}")
+        logger.error(f"Ошибка скачивания каталога из S3: {e}")
         return None
 
 
-def s3_get_presigned_url(expiration=3600):
-    """Возвращает presigned URL для скачивания catalog.json (действителен expiration секунд)."""
-    if not S3_ENABLED or not S3_CLIENT:
+def s3_get_presigned_url(expires=3600):
+    """Генерирует временную ссылку на скачивание catalog.json из S3."""
+    if not S3_ENABLED or not s3_client:
         return None
     try:
-        url = S3_CLIENT.generate_presigned_url(
+        url = s3_client.generate_presigned_url(
             "get_object",
             Params={"Bucket": S3_BUCKET, "Key": S3_CATALOG_KEY},
-            ExpiresIn=expiration,
+            ExpiresIn=expires,
         )
         return url
     except Exception as e:
-        logger.error(f"Не удалось создать presigned URL: {e}")
+        logger.error(f"Ошибка генерации presigned URL: {e}")
         return None
 
 
@@ -220,40 +222,33 @@ def cleanup_stale_sessions():
 
 
 # === КАТАЛОГ ===
+
 CATALOG_FILE = os.path.join(os.path.dirname(__file__), "catalog.json")
 CATALOG_BACKUP = os.path.join(os.path.dirname(__file__), "catalog_backup.json")
 
 
 def load_catalog():
     """Читает каталог. Сначала пробует S3, потом локальный файл."""
-    # Сначала пробуем S3
     if S3_ENABLED:
         s3_data = s3_download_catalog()
-        if s3_data and isinstance(s3_data, dict) and "categories" in s3_data:
-            # Сохраняем локально для бэкапа
+        if s3_data and isinstance(s3_data, dict) and s3_data.get("categories") is not None:
+            logger.info("Каталог загружен из S3 (Yandex Object Storage)")
+            # Сохраняем локально для работы
             try:
                 with open(CATALOG_FILE, "w", encoding="utf-8") as f:
                     json.dump(s3_data, f, ensure_ascii=False, indent=2)
-                logger.info("Каталог из S3 сохранён локально")
             except Exception as e:
-                logger.warning(f"Не удалось сохранить каталог из S3 локально: {e}")
-            cats = s3_data.get("categories", [])
-            total_items = sum(len(c.get("items", [])) for c in cats)
-            logger.info(f"Каталог загружен из S3: {len(cats)} категорий, {total_items} товаров.")
+                logger.warning(f"Не удалось сохранить каталог локально из S3: {e}")
             return s3_data
         else:
-            logger.info("S3 пуст или недоступен — пробуем локальный файл")
+            logger.warning("S3 недоступен или каталог в S3 не найден — fallback на локальный файл")
 
-    # Локальный файл
     try:
         with open(CATALOG_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         cats = data.get("categories", [])
         total_items = sum(len(c.get("items", [])) for c in cats)
-        logger.info(f"Каталог загружен из файла: {len(cats)} категорий, {total_items} товаров.")
-        # Если есть локальный каталог и S3 включён — загружаем в S3
-        if S3_ENABLED and cats:
-            s3_upload_catalog()
+        logger.info(f"Каталог загружен из локального файла: {len(cats)} категорий, {total_items} товаров.")
         return data
     except FileNotFoundError:
         logger.error("catalog.json не найден! Создайте файл или добавьте товары через /добавить.")
@@ -272,30 +267,34 @@ def rebuild_catalog_index():
 
 
 def save_catalog():
-    """Сохраняет каталог локально и в S3. Только для админ-действий."""
+    """Сохраняет каталог локально и в S3. ТОЛЬКО для админ-действий."""
     cats = CATALOG_DATA.get("categories", [])
     if not cats:
         logger.warning("save_catalog: каталог пуст — НЕ сохраняю (защита от потери данных)!")
         return False
-    # Резервная копия локального файла
+    # Резервная копия
     if os.path.exists(CATALOG_FILE):
         try:
             shutil.copy2(CATALOG_FILE, CATALOG_BACKUP)
             logger.info("Создана резервная копия catalog_backup.json")
         except Exception as e:
             logger.error(f"Не удалось создать резервную копию: {e}")
-    # Сохранение локально
     try:
         with open(CATALOG_FILE, "w", encoding="utf-8") as f:
             json.dump(CATALOG_DATA, f, ensure_ascii=False, indent=2)
         logger.info(f"Каталог сохранён локально: {len(cats)} категорий.")
+        rebuild_catalog_index()
     except Exception as e:
-        logger.error(f"Ошибка сохранения каталога в файл: {e}")
+        logger.error(f"Ошибка сохранения каталога локально: {e}")
         return False
-    # Сохранение в S3
+
+    # Загрузка в S3
     if S3_ENABLED:
-        s3_upload_catalog()
-    rebuild_catalog_index()
+        ok, err = s3_upload_catalog()
+        if ok:
+            logger.info("Каталог также сохранён в S3 (Yandex Object Storage)")
+        else:
+            logger.warning(f"Не удалось сохранить каталог в S3: {err}")
     return True
 
 
@@ -653,7 +652,6 @@ def build_admin_edit_keyboard():
 
 
 def build_admin_categories_keyboard(prefix):
-    """prefix: 'admin_add_product_cat', 'admin_edit_product_cat', 'admin_del_category', 'admin_del_product_cat'"""
     buttons = []
     for i, cat in enumerate(CATALOG_DATA.get("categories", [])):
         buttons.append([{"type": "callback", "text": f"\U0001F4E6 {cat['name']}", "payload": f"{prefix}:{i}"}])
@@ -662,7 +660,6 @@ def build_admin_categories_keyboard(prefix):
 
 
 def build_admin_products_keyboard(cat_index, prefix):
-    """prefix: 'admin_edit_product', 'admin_del_product'"""
     cat = CATALOG_DATA["categories"][cat_index]
     buttons = []
     for i, item in enumerate(cat.get("items", [])):
@@ -706,30 +703,26 @@ def admin_show_catalog(user_id):
 
 
 def admin_export_catalog(user_id):
-    """Отправляет каталог — ссылку на S3 (если настроен) или текстом по частям."""
+    """Отправляет содержимое catalog.json. Если S3 включён — ссылкой, иначе текстом."""
     if not is_admin(user_id):
         return
-
-    # Если S3 настроен — отправляем presigned URL
     if S3_ENABLED:
-        url = s3_get_presigned_url(expiration=3600)
+        url = s3_get_presigned_url(expires=3600)
         if url:
             send_message(
                 user_id=user_id,
-                text=f"\U0001F4E4 Экспорт каталога\n\n"
-                     f"Каталог хранится в Yandex Object Storage.\n"
-                     f"Ссылка для скачивания (действительна 1 час):\n\n{url}",
-                keyboard=build_main_menu_keyboard(),
+                text="\U0001F4E4 Экспорт каталога\n\n"
+                     "Ссылка на скачивание catalog.json (действительна 1 час):\n\n"
+                     f"{url}",
             )
             return
         else:
-            send_message(user_id=user_id, text="\u26A0\uFE0F Не удалось создать ссылку. Пытаюсь отправить текстом...")
-
-    # Текстовый экспорт (fallback или S3 не настроен)
+            send_message(user_id=user_id, text="\u26A0\uFE0F Не удалось сгенерировать ссылку. Попробуйте текстовый экспорт или /синхронизировать.")
+            return
     try:
         with open(CATALOG_FILE, "r", encoding="utf-8") as f:
             raw = f.read()
-        max_len = 3000  # Уменьшено с 4000 для запаса на заголовки и markdown
+        max_len = 3000
         if len(raw) <= max_len:
             send_message(
                 user_id=user_id,
@@ -745,34 +738,17 @@ def admin_export_catalog(user_id):
                 chunk += line + "\n"
             if chunk:
                 parts.append(chunk)
-            total_parts = len(parts)
             for i, part in enumerate(parts):
                 if i == 0:
-                    msg = f"\U0001F4E4 Экспорт каталога (часть {i+1}/{total_parts})\n\n```\n{part}"
-                elif i == total_parts - 1:
-                    msg = f"\U0001F4E4 (часть {i+1}/{total_parts})\n\n{part}\n```"
+                    send_message(user_id=user_id, text=f"\U0001F4E4 Экспорт каталога (часть {i+1}/{len(parts)})\n\n```\n{part}")
+                elif i == len(parts) - 1:
+                    send_message(user_id=user_id, text=f"\U0001F4E4 (часть {i+1}/{len(parts)})\n\n{part}\n```")
                 else:
-                    msg = f"\U0001F4E4 (часть {i+1}/{total_parts})\n\n{part}"
-                logger.info(f"Экспорт: отправляю часть {i+1}/{total_parts}, длина={len(msg)}")
-                send_message(user_id=user_id, text=msg)
-                if i < total_parts - 1:
+                    send_message(user_id=user_id, text=f"\U0001F4E4 (часть {i+1}/{len(parts)})\n\n{part}")
+                if i < len(parts) - 1:
                     time.sleep(0.8)
     except FileNotFoundError:
         send_message(user_id=user_id, text="\u26A0\uFE0F catalog.json не найден на сервере.")
-
-
-def admin_sync_catalog(user_id):
-    """Принудительно загружает текущий каталог в S3."""
-    if not is_admin(user_id):
-        return
-    if not S3_ENABLED:
-        send_message(user_id=user_id, text="\u26A0\uFE0F S3 не настроен. Задайте переменные YANDEX_S3_ACCESS_KEY, YANDEX_S3_SECRET_KEY, YANDEX_S3_BUCKET.")
-        return
-    ok = s3_upload_catalog()
-    if ok:
-        send_message(user_id=user_id, text="\u2705 Каталог загружен в Yandex Object Storage.", keyboard=build_main_menu_keyboard())
-    else:
-        send_message(user_id=user_id, text="\u274C Не удалось загрузить каталог в S3. Проверьте логи.")
 
 
 def _strip_markdown(text):
@@ -780,10 +756,8 @@ def _strip_markdown(text):
     text = text.strip()
     if text.startswith("```"):
         lines = text.split("\n")
-        # Убираем первую строку (```json или ```)
         if lines and lines[0].strip().startswith("```"):
             lines = lines[1:]
-        # Убираем последнюю строку (```)
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         text = "\n".join(lines).strip()
@@ -810,6 +784,20 @@ def admin_import_catalog(user_id):
             "timestamp": time.time(),
         }
         save_state()
+
+
+def admin_sync_catalog(user_id):
+    """Принудительно загружает каталог в S3."""
+    if not is_admin(user_id):
+        return
+    if not S3_ENABLED:
+        send_message(user_id=user_id, text="\u26A0\uFE0F S3 (Yandex Object Storage) не настроен. Задайте переменные YANDEX_S3_ACCESS_KEY, YANDEX_S3_SECRET_KEY, YANDEX_S3_BUCKET.")
+        return
+    ok, err = s3_upload_catalog()
+    if ok:
+        send_message(user_id=user_id, text="\u2705 Каталог загружен в Yandex Object Storage!", keyboard=build_main_menu_keyboard())
+    else:
+        send_message(user_id=user_id, text=f"\u274C Не удалось загрузить каталог в S3: {err}")
 
 
 # === CALLBACK ОБРАБОТКА ===
@@ -1211,7 +1199,6 @@ def handle_admin_steps(sender_id, text):
         if not name:
             send_message(user_id=sender_id, text="Название не может быть пустым. Напишите название:")
             return True
-        # Проверка дубликата
         for cat in CATALOG_DATA.get("categories", []):
             if cat["name"].lower() == name.lower():
                 send_message(user_id=sender_id, text=f"\u26A0\uFE0F Категория «{name}» уже существует. Напишите другое название:")
@@ -1296,7 +1283,6 @@ def handle_admin_steps(sender_id, text):
         with _lock:
             del pending_replies[sender_id]
             save_state()
-        # Превью
         preview = f"\U0001FA91 {name}\n\U0001F4B0 Цена: {price} руб.\n\U0001F4DD {desc}\n\U0001F4D8 Фото: {'есть' if photo else 'нет'}\n\U0001F194 id: {item_id}"
         send_message(
             user_id=sender_id,
@@ -1367,7 +1353,6 @@ def handle_admin_steps(sender_id, text):
     if step == "admin_import":
         raw = (text or "").strip()
 
-        # Команда завершения
         if raw.lower() in ("готово", "done", "завершить", "/end"):
             parts = state.get("import_parts", [])
             if not parts:
@@ -1410,7 +1395,6 @@ def handle_admin_steps(sender_id, text):
                 )
             return True
 
-        # Добавляем часть (с очисткой markdown с отдельной посылки)
         clean_part = _strip_markdown(raw)
         parts = state.get("import_parts", [])
         parts.append(clean_part)
@@ -1420,7 +1404,6 @@ def handle_admin_steps(sender_id, text):
             pending_replies[sender_id]["timestamp"] = time.time()
             save_state()
 
-        # Пытаемся распарсить сразу — может, это уже полный JSON в одной посылке
         full_text = _strip_markdown("\n".join(parts))
         try:
             data = json.loads(full_text)
@@ -1441,9 +1424,8 @@ def handle_admin_steps(sender_id, text):
                     )
                     return True
         except (json.JSONDecodeError, ValueError):
-            pass  # Не полный JSON — ждём дальше
+            pass
 
-        # Сообщаем, сколько собрано
         total_chars = sum(len(p) for p in parts)
         send_message(
             user_id=sender_id,
@@ -1487,7 +1469,6 @@ def handle_pending_state(sender_id, text):
     if not step:
         return False
 
-    # Проверка timeout
     if "timestamp" in state and time.time() - state["timestamp"] > SESSION_TIMEOUT:
         with _lock:
             del pending_replies[sender_id]
@@ -1572,7 +1553,6 @@ def handle_pending_state(sender_id, text):
         send_message(user_id=sender_id, text="\u2705 Спасибо! Мастер свяжется с вами в ближайшее время.", keyboard=build_main_menu_keyboard())
         return True
 
-    # Совместимость со старыми шагами
     if step == "waiting_name":
         name = (text or "").strip()
         if not name:
@@ -1747,7 +1727,6 @@ def handle_message_created(data):
         )
         return
 
-    # /вопросы — только для админа
     if cmd == "/вопросы" and is_admin(sender_id):
         if active_dialogs:
             lines = []
@@ -1766,7 +1745,6 @@ def handle_message_created(data):
         if isinstance(state, dict) and "first_name" not in state and "step" in state:
             state["first_name"] = first_name
 
-        # Сначала админ-шаги
         if is_admin(sender_id) and handle_admin_steps(sender_id, text):
             return
 
@@ -1777,12 +1755,10 @@ def handle_message_created(data):
             if handle_pending_reply_comment(sender_id, text):
                 return
 
-    # /start
     if cmd and cmd.startswith("/start"):
         send_welcome(sender_id)
         return
 
-    # Fallback
     send_message(user_id=sender_id, text="Я не совсем понял сообщение.\n\n\U0001F447Выберите действие\U0001F447", keyboard=build_main_menu_keyboard())
 
 
@@ -1869,7 +1845,6 @@ def index():
         "active_dialogs": len(active_dialogs),
         "pending_replies": len(pending_replies),
         "carts": len(user_carts),
-        "s3_enabled": S3_ENABLED,
     }), 200
 
 
@@ -1881,7 +1856,6 @@ def health():
         "webhook_url_configured": bool(WEBHOOK_URL),
         "notify_chat_configured": bool(NOTIFY_CHAT_ID),
         "catalog_items": len(CATALOG_INDEX),
-        "s3_enabled": S3_ENABLED,
     }), 200
 
 
