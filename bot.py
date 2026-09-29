@@ -8,6 +8,8 @@ import signal
 import threading
 import logging
 import shutil
+from collections import OrderedDict
+from datetime import datetime, date
 from flask import Flask, request, jsonify
 import requests
 import urllib3
@@ -39,62 +41,61 @@ S3_BUCKET = os.environ.get("YANDEX_S3_BUCKET", "")
 S3_CATALOG_KEY = "catalog.json"
 S3_ENABLED = bool(S3_ACCESS_KEY and S3_SECRET_KEY and S3_BUCKET)
 
-s3_client = None
 if S3_ENABLED:
     try:
         import boto3
-        from botocore.config import Config
+        from botocore.config import Config as BotoConfig
         s3_client = boto3.client(
             "s3",
             endpoint_url="https://storage.yandexcloud.net",
             aws_access_key_id=S3_ACCESS_KEY,
             aws_secret_access_key=S3_SECRET_KEY,
             region_name="ru-central1",
-            config=Config(signature_version="s3"),
+            config=BotoConfig(max_retries=3, retries={"max_attempts": 3}),
         )
-        logger.info(f"S3 инициализирован: bucket={S3_BUCKET}")
+        logger.info("S3 клиент инициализирован")
     except Exception as e:
-        logger.error(f"Не удалось инициализировать S3: {e}")
+        logger.warning(f"S3 не инициализирован: {e}")
         S3_ENABLED = False
+        s3_client = None
+else:
+    s3_client = None
+    logger.info("S3 не настроен — работаем без облака")
 
 
 def s3_upload_catalog():
-    """Загружает catalog.json в Yandex Object Storage."""
     if not S3_ENABLED or not s3_client:
-        return False, "S3 не настроен"
+        return False
     try:
-        with open(CATALOG_FILE, "r", encoding="utf-8") as f:
-            raw = f.read()
+        raw = json.dumps(CATALOG_DATA, ensure_ascii=False, indent=2)
         s3_client.put_object(
             Bucket=S3_BUCKET,
             Key=S3_CATALOG_KEY,
             Body=raw.encode("utf-8"),
             ContentType="application/json; charset=utf-8",
         )
-        logger.info(f"Каталог загружен в S3: bucket={S3_BUCKET}, key={S3_CATALOG_KEY}")
-        return True, ""
+        logger.info("Каталог загружен в S3")
+        return True
     except Exception as e:
         logger.error(f"Ошибка загрузки каталога в S3: {e}")
-        return False, str(e)
+        return False
 
 
 def s3_download_catalog():
-    """Скачивает catalog.json из Yandex Object Storage. Возвращает dict или None."""
     if not S3_ENABLED or not s3_client:
         return None
     try:
         resp = s3_client.get_object(Bucket=S3_BUCKET, Key=S3_CATALOG_KEY)
-        data = resp["Body"].read().decode("utf-8")
-        parsed = json.loads(data)
-        logger.info(f"Каталог скачан из S3: bucket={S3_BUCKET}")
-        return parsed
+        raw = resp["Body"].read().decode("utf-8")
+        data = json.loads(raw)
+        logger.info("Каталог скачан из S3")
+        return data
     except Exception as e:
-        logger.error(f"Ошибка скачивания каталога из S3: {e}")
+        logger.warning(f"Не удалось скачать каталог из S3: {e}")
         return None
 
 
 def s3_get_presigned_url(expires=3600):
-    """Генерирует временную ссылку на скачивание catalog.json из S3."""
     if not S3_ENABLED or not s3_client:
         return None
     try:
@@ -129,12 +130,16 @@ pending_replies: dict = {}
 user_carts: dict = {}
 question_counter = 0
 active_dialogs: dict = {}
+stats: dict = {}
+unique_users: set = set()
 
 STATE_FILES = {
     "pending_replies": os.path.join(STATE_DIR, "pending_replies.json"),
     "user_carts": os.path.join(STATE_DIR, "user_carts.json"),
     "active_dialogs": os.path.join(STATE_DIR, "active_dialogs.json"),
     "question_counter": os.path.join(STATE_DIR, "question_counter.json"),
+    "stats": os.path.join(STATE_DIR, "stats.json"),
+    "unique_users": os.path.join(STATE_DIR, "unique_users.json"),
 }
 
 
@@ -148,6 +153,10 @@ def save_state():
             json.dump(active_dialogs, f, ensure_ascii=False)
         with open(STATE_FILES["question_counter"], "w", encoding="utf-8") as f:
             json.dump({"value": question_counter}, f, ensure_ascii=False)
+        with open(STATE_FILES["stats"], "w", encoding="utf-8") as f:
+            json.dump(stats, f, ensure_ascii=False)
+        with open(STATE_FILES["unique_users"], "w", encoding="utf-8") as f:
+            json.dump(list(unique_users), f, ensure_ascii=False)
     except Exception as e:
         logger.error(f"Ошибка сохранения состояния: {e}")
 
@@ -164,7 +173,7 @@ def _strip_for_save(d):
 
 
 def load_state():
-    global question_counter, pending_replies, user_carts, active_dialogs
+    global question_counter, pending_replies, user_carts, active_dialogs, stats, unique_users
     try:
         if os.path.exists(STATE_FILES["pending_replies"]):
             with open(STATE_FILES["pending_replies"], "r", encoding="utf-8") as f:
@@ -198,12 +207,172 @@ def load_state():
     except Exception as e:
         logger.error(f"Ошибка загрузки question_counter: {e}")
 
+    try:
+        if os.path.exists(STATE_FILES["stats"]):
+            with open(STATE_FILES["stats"], "r", encoding="utf-8") as f:
+                stats = json.load(f)
+            logger.info(f"Загружена статистика: {stats.get('total_orders', 0)} заказов")
+    except Exception as e:
+        logger.error(f"Ошибка загрузки статистики: {e}")
+
+    try:
+        if os.path.exists(STATE_FILES["unique_users"]):
+            with open(STATE_FILES["unique_users"], "r", encoding="utf-8") as f:
+                unique_users = set(json.load(f))
+            logger.info(f"Загружено уникальных пользователей: {len(unique_users)}")
+    except Exception as e:
+        logger.error(f"Ошибка загрузки unique_users: {e}")
+
     for uid, state in pending_replies.items():
         if isinstance(state, dict) and state.get("step") == "waiting_contact_quick" and "item_id" in state:
             item = find_item_by_id(state["item_id"])
             if item:
                 state["item"] = item
                 logger.info(f"Восстановлен item для pending_replies[{uid}]")
+
+
+# === СТАТИСТИКА ===
+DEFAULT_STATS = {
+    "total_users": 0,
+    "total_catalog_views": 0,
+    "total_category_views": 0,
+    "total_product_views": 0,
+    "total_cart_adds": 0,
+    "total_quick_orders": 0,
+    "total_cart_orders": 0,
+    "total_questions": 0,
+    "total_comments_forwarded": 0,
+    "first_interaction": None,
+    "last_interaction": None,
+    "daily": {},
+}
+
+
+def init_stats():
+    global stats
+    if not stats:
+        stats = DEFAULT_STATS.copy()
+        stats["daily"] = {}
+    else:
+        for k, v in DEFAULT_STATS.items():
+            if k == "daily":
+                if "daily" not in stats:
+                    stats["daily"] = {}
+            elif k not in stats:
+                stats[k] = v
+
+
+def _today_str():
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def _ensure_daily():
+    today = _today_str()
+    if today not in stats["daily"]:
+        stats["daily"][today] = {
+            "users": 0,
+            "catalog_views": 0,
+            "product_views": 0,
+            "cart_adds": 0,
+            "quick_orders": 0,
+            "cart_orders": 0,
+            "questions": 0,
+        }
+
+
+def _cleanup_old_daily(max_days=30):
+    if not stats.get("daily"):
+        return
+    cutoff = (datetime.now().replace(hour=0, minute=0, second=0, microsecond=0))
+    from datetime import timedelta
+    cutoff -= timedelta(days=max_days)
+    cutoff_str = cutoff.strftime("%Y-%m-%d")
+    to_remove = [d for d in stats["daily"] if d < cutoff_str]
+    for d in to_remove:
+        del stats["daily"][d]
+    if to_remove:
+        logger.info(f"Очищено {len(to_remove)} старых записей daily stats")
+
+
+def track_user(user_id):
+    uid = str(user_id)
+    if uid not in unique_users:
+        unique_users.add(uid)
+        stats["total_users"] = stats.get("total_users", 0) + 1
+    _ensure_daily()
+    stats["daily"][_today_str()]["users"] += 1
+    _update_interaction_time()
+
+
+def track_event(event_name, daily_key=None, count=1):
+    key = f"total_{event_name}"
+    stats[key] = stats.get(key, 0) + count
+    if daily_key:
+        _ensure_daily()
+        stats["daily"][_today_str()][daily_key] = stats["daily"][_today_str()].get(daily_key, 0) + count
+    _update_interaction_time()
+
+
+def _update_interaction_time():
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if not stats.get("first_interaction"):
+        stats["first_interaction"] = now
+    stats["last_interaction"] = now
+
+
+def get_stats_report():
+    init_stats()
+    _cleanup_old_daily()
+    total_orders = stats.get("total_quick_orders", 0) + stats.get("total_cart_orders", 0)
+    today = _today_str()
+    today_data = stats.get("daily", {}).get(today, {})
+    yesterday_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    from datetime import timedelta
+    yesterday_date -= timedelta(days=1)
+    yesterday = yesterday_date.strftime("%Y-%m-%d")
+    yesterday_data = stats.get("daily", {}).get(yesterday, {})
+
+    lines = [
+        "\U0001F4CA Статистика бота",
+        "",
+        "\U0001F465 Пользователи:",
+        f"  \u2022 Уникальных всего: {stats.get('total_users', 0)}",
+        f"  \u2022 Активных сегодня: {today_data.get('users', 0)}",
+        f"  \u2022 Активных вчера: {yesterday_data.get('users', 0)}",
+        "",
+        "\U0001F4CB Каталог:",
+        f"  \u2022 Просмотры каталога: {stats.get('total_catalog_views', 0)}",
+        f"  \u2022 Просмотры категорий: {stats.get('total_category_views', 0)}",
+        f"  \u2022 Просмотры товаров: {stats.get('total_product_views', 0)}",
+        "",
+        "\U0001F6D2 Корзина и заказы:",
+        f"  \u2022 Добавлений в корзину: {stats.get('total_cart_adds', 0)}",
+        f"  \u2022 Быстрых заказов: {stats.get('total_quick_orders', 0)}",
+        f"  \u2022 Заказов из корзины: {stats.get('total_cart_orders', 0)}",
+        f"  \u2022 Всего заказов: {total_orders}",
+        "",
+        "\u2753 Вопросы и комментарии:",
+        f"  \u2022 Вопросов мастеру: {stats.get('total_questions', 0)}",
+        f"  \u2022 Активных диалогов: {len(active_dialogs)}",
+        f"  \u2022 Переслано комментариев: {stats.get('total_comments_forwarded', 0)}",
+        "",
+        f"\U0001F4C5 Период работы:",
+        f"  \u2022 Первый контакт: {stats.get('first_interaction', 'нет данных')}",
+        f"  \u2022 Последний: {stats.get('last_interaction', 'нет данных')}",
+    ]
+
+    # Топ-7 дней по активности
+    if stats.get("daily"):
+        lines.append("")
+        lines.append("\U0001F4C8 Последние 7 дней:")
+        sorted_days = sorted(stats["daily"].keys(), reverse=True)[:7]
+        for d in sorted_days:
+            dd = stats["daily"][d]
+            day_total = dd.get("users", 0) + dd.get("catalog_views", 0) + dd.get("product_views", 0) + dd.get("cart_adds", 0) + dd.get("quick_orders", 0) + dd.get("cart_orders", 0) + dd.get("questions", 0)
+            orders = dd.get("quick_orders", 0) + dd.get("cart_orders", 0)
+            lines.append(f"  \u2022 {d}: {dd.get('users', 0)} польз. | {dd.get('catalog_views', 0)} каталог | {orders} заказов | {dd.get('questions', 0)} вопр. (всего {day_total} действий)")
+
+    return "\n".join(lines)
 
 
 def cleanup_stale_sessions():
@@ -222,33 +391,34 @@ def cleanup_stale_sessions():
 
 
 # === КАТАЛОГ ===
-
 CATALOG_FILE = os.path.join(os.path.dirname(__file__), "catalog.json")
 CATALOG_BACKUP = os.path.join(os.path.dirname(__file__), "catalog_backup.json")
 
 
 def load_catalog():
-    """Читает каталог. Сначала пробует S3, потом локальный файл."""
+    # Сначала пробуем S3
     if S3_ENABLED:
         s3_data = s3_download_catalog()
-        if s3_data and isinstance(s3_data, dict) and s3_data.get("categories") is not None:
-            logger.info("Каталог загружен из S3 (Yandex Object Storage)")
-            # Сохраняем локально для работы
+        if s3_data and isinstance(s3_data, dict) and "categories" in s3_data:
+            # Сохраняем локально для кэша
             try:
                 with open(CATALOG_FILE, "w", encoding="utf-8") as f:
                     json.dump(s3_data, f, ensure_ascii=False, indent=2)
-            except Exception as e:
-                logger.warning(f"Не удалось сохранить каталог локально из S3: {e}")
+            except Exception:
+                pass
+            cats = s3_data.get("categories", [])
+            total_items = sum(len(c.get("items", [])) for c in cats)
+            logger.info(f"Каталог загружен из S3: {len(cats)} категорий, {total_items} товаров.")
             return s3_data
         else:
-            logger.warning("S3 недоступен или каталог в S3 не найден — fallback на локальный файл")
+            logger.warning("S3 недоступен или каталог не найден — fallback на локальный файл")
 
     try:
         with open(CATALOG_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         cats = data.get("categories", [])
         total_items = sum(len(c.get("items", [])) for c in cats)
-        logger.info(f"Каталог загружен из локального файла: {len(cats)} категорий, {total_items} товаров.")
+        logger.info(f"Каталог загружен локально: {len(cats)} категорий, {total_items} товаров.")
         return data
     except FileNotFoundError:
         logger.error("catalog.json не найден! Создайте файл или добавьте товары через /добавить.")
@@ -259,7 +429,6 @@ def load_catalog():
 
 
 def rebuild_catalog_index():
-    """Перестраивает индекс товаров из CATALOG_DATA."""
     CATALOG_INDEX.clear()
     for cat in CATALOG_DATA.get("categories", []):
         for item in cat.get("items", []):
@@ -267,12 +436,10 @@ def rebuild_catalog_index():
 
 
 def save_catalog():
-    """Сохраняет каталог локально и в S3. ТОЛЬКО для админ-действий."""
     cats = CATALOG_DATA.get("categories", [])
     if not cats:
         logger.warning("save_catalog: каталог пуст — НЕ сохраняю (защита от потери данных)!")
         return False
-    # Резервная копия
     if os.path.exists(CATALOG_FILE):
         try:
             shutil.copy2(CATALOG_FILE, CATALOG_BACKUP)
@@ -285,16 +452,15 @@ def save_catalog():
         logger.info(f"Каталог сохранён локально: {len(cats)} категорий.")
         rebuild_catalog_index()
     except Exception as e:
-        logger.error(f"Ошибка сохранения каталога локально: {e}")
+        logger.error(f"Ошибка локального сохранения каталога: {e}")
         return False
-
-    # Загрузка в S3
+    # Загружаем в S3
     if S3_ENABLED:
-        ok, err = s3_upload_catalog()
-        if ok:
-            logger.info("Каталог также сохранён в S3 (Yandex Object Storage)")
+        s3_ok = s3_upload_catalog()
+        if s3_ok:
+            logger.info("Каталог синхронизирован с S3")
         else:
-            logger.warning(f"Не удалось сохранить каталог в S3: {err}")
+            logger.warning("Не удалось синхронизировать каталог с S3")
     return True
 
 
@@ -308,7 +474,6 @@ def find_item_by_id(item_id):
 
 
 def find_category_by_item_id(item_id):
-    """Возвращает (cat_index, item_index) для товара."""
     for ci, cat in enumerate(CATALOG_DATA.get("categories", [])):
         for ii, item in enumerate(cat.get("items", [])):
             if item["id"] == item_id:
@@ -316,7 +481,6 @@ def find_category_by_item_id(item_id):
     return None, None
 
 
-# Транслитерация для генерации id
 TRANSLIT = {
     'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'zh','з':'z',
     'и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r',
@@ -325,7 +489,6 @@ TRANSLIT = {
 }
 
 def make_slug(text):
-    """Генерирует slug из русского текста."""
     text = text.lower().strip()
     result = []
     for ch in text:
@@ -336,7 +499,6 @@ def make_slug(text):
         elif ch in ' -':
             result.append('_')
     slug = ''.join(result).strip('_')
-    # Уникальность
     base = slug
     n = 2
     while base in CATALOG_INDEX:
@@ -703,26 +865,29 @@ def admin_show_catalog(user_id):
 
 
 def admin_export_catalog(user_id):
-    """Отправляет содержимое catalog.json. Если S3 включён — ссылкой, иначе текстом."""
     if not is_admin(user_id):
         return
+
+    # Если S3 включён — отправляем ссылку
     if S3_ENABLED:
         url = s3_get_presigned_url(expires=3600)
         if url:
             send_message(
                 user_id=user_id,
-                text="\U0001F4E4 Экспорт каталога\n\n"
-                     "Ссылка на скачивание catalog.json (действительна 1 час):\n\n"
-                     f"{url}",
+                text=f"\U0001F4E4 Экспорт каталога\n\n"
+                     f"Каталог хранится в Yandex Object Storage.\n"
+                     f"\U0001F517 Ссылка для скачивания (действительна 1 час):\n{url}",
             )
             return
         else:
-            send_message(user_id=user_id, text="\u26A0\uFE0F Не удалось сгенерировать ссылку. Попробуйте текстовый экспорт или /синхронизировать.")
-            return
+            send_message(user_id=user_id, text="\u26A0\uFE0F Не удалось сгенерировать ссылку S3. Попробуйте позже или используйте текстовый экспорт ниже.")
+            # Fallback на текстовый экспорт
+
+    # Текстовый экспорт
     try:
         with open(CATALOG_FILE, "r", encoding="utf-8") as f:
             raw = f.read()
-        max_len = 3000
+        max_len = 3000  # Уменьшено с 4000 для запаса на заголовки и markdown
         if len(raw) <= max_len:
             send_message(
                 user_id=user_id,
@@ -745,14 +910,14 @@ def admin_export_catalog(user_id):
                     send_message(user_id=user_id, text=f"\U0001F4E4 (часть {i+1}/{len(parts)})\n\n{part}\n```")
                 else:
                     send_message(user_id=user_id, text=f"\U0001F4E4 (часть {i+1}/{len(parts)})\n\n{part}")
+                logger.info(f"Экспорт: отправлена часть {i+1}/{len(parts)}, длина {len(part)} символов")
                 if i < len(parts) - 1:
-                    time.sleep(0.8)
+                    time.sleep(0.8)  # Увеличено с 0.3 для надёжности
     except FileNotFoundError:
         send_message(user_id=user_id, text="\u26A0\uFE0F catalog.json не найден на сервере.")
 
 
 def _strip_markdown(text):
-    """Убирает markdown-обёртку ```json ... ``` или ``` ... ``` из текста."""
     text = text.strip()
     if text.startswith("```"):
         lines = text.split("\n")
@@ -765,7 +930,6 @@ def _strip_markdown(text):
 
 
 def admin_import_catalog(user_id):
-    """Запускает режим импорта — ждёт текст catalog.json от админа (можно по частям)."""
     if not is_admin(user_id):
         return
     send_message(
@@ -786,18 +950,24 @@ def admin_import_catalog(user_id):
         save_state()
 
 
-def admin_sync_catalog(user_id):
-    """Принудительно загружает каталог в S3."""
+def admin_sync_s3(user_id):
     if not is_admin(user_id):
         return
     if not S3_ENABLED:
-        send_message(user_id=user_id, text="\u26A0\uFE0F S3 (Yandex Object Storage) не настроен. Задайте переменные YANDEX_S3_ACCESS_KEY, YANDEX_S3_SECRET_KEY, YANDEX_S3_BUCKET.")
+        send_message(user_id=user_id, text="\u26A0\uFE0F S3 не настроен. Задайте переменные YANDEX_S3_ACCESS_KEY, YANDEX_S3_SECRET_KEY, YANDEX_S3_BUCKET.")
         return
-    ok, err = s3_upload_catalog()
+    ok = s3_upload_catalog()
     if ok:
-        send_message(user_id=user_id, text="\u2705 Каталог загружен в Yandex Object Storage!", keyboard=build_main_menu_keyboard())
+        send_message(user_id=user_id, text="\u2705 Каталог загружен в Yandex Object Storage!")
     else:
-        send_message(user_id=user_id, text=f"\u274C Не удалось загрузить каталог в S3: {err}")
+        send_message(user_id=user_id, text="\u274C Не удалось загрузить каталог в S3. Проверьте логи.")
+
+
+def admin_show_stats(user_id):
+    if not is_admin(user_id):
+        return
+    report = get_stats_report()
+    send_message(user_id=user_id, text=report)
 
 
 # === CALLBACK ОБРАБОТКА ===
@@ -818,7 +988,9 @@ def handle_callback(data):
         answer_callback(callback_id, "Ошибка: не удалось определить пользователя")
         return jsonify({"ok": True}), 200
 
-    # --- cancel_action ---
+    # Трекинг пользователя
+    track_user(sender_id)
+
     if payload == "cancel_action":
         with _lock:
             had = pending_replies.pop(sender_id, None)
@@ -828,7 +1000,6 @@ def handle_callback(data):
         send_main_menu(sender_id)
         return jsonify({"ok": True}), 200
 
-    # --- reply:<post_id>:<comment_mid> ---
     if payload.startswith("reply:"):
         parts = payload.split(":", 2)
         if len(parts) == 3:
@@ -846,26 +1017,26 @@ def handle_callback(data):
             answer_callback(callback_id, "Ошибка: неверный формат")
         return jsonify({"ok": True}), 200
 
-    # --- show_category:<index> ---
     if payload.startswith("show_category:"):
         cat_index = int(payload.split(":", 1)[1])
         categories = CATALOG_DATA.get("categories", [])
         if cat_index < len(categories):
             category = categories[cat_index]
             answer_callback(callback_id, f"Открываю: {category['name']}")
+            track_event("category_views")
             items = category.get("items", [])
             if not items:
                 send_message(user_id=sender_id, text="В этой категории пока нет товаров.", keyboard=build_catalog_keyboard())
                 return jsonify({"ok": True}), 200
             for idx, item in enumerate(items):
                 send_product_card(sender_id, item)
+                track_event("product_views")
                 if idx < len(items) - 1:
                     time.sleep(0.3)
         else:
             answer_callback(callback_id, "Категория не найдена")
         return jsonify({"ok": True}), 200
 
-    # --- add_to_cart:<item_id> ---
     if payload.startswith("add_to_cart:"):
         item_id = payload.split(":", 1)[1]
         item = find_item_by_id(item_id)
@@ -877,6 +1048,7 @@ def handle_callback(data):
                 user_carts[sender_id] = []
             user_carts[sender_id].append(item_id)
             save_state()
+        track_event("cart_adds", "cart_adds")
         answer_callback(callback_id, "\u2705 Добавлено в корзину!")
         count = len(user_carts[sender_id])
         send_message(
@@ -886,7 +1058,6 @@ def handle_callback(data):
         )
         return jsonify({"ok": True}), 200
 
-    # --- quick_order:<item_id> ---
     if payload.startswith("quick_order:"):
         item_id = payload.split(":", 1)[1]
         item = find_item_by_id(item_id)
@@ -909,7 +1080,6 @@ def handle_callback(data):
             save_state()
         return jsonify({"ok": True}), 200
 
-    # --- ask_question:<item_id> ---
     if payload.startswith("ask_question:"):
         item_id = payload.split(":", 1)[1]
         item = find_item_by_id(item_id)
@@ -930,7 +1100,6 @@ def handle_callback(data):
             save_state()
         return jsonify({"ok": True}), 200
 
-    # --- start_checkout ---
     if payload == "start_checkout":
         cart = user_carts.get(sender_id, [])
         if not cart:
@@ -959,7 +1128,6 @@ def handle_callback(data):
             save_state()
         return jsonify({"ok": True}), 200
 
-    # --- clear_cart ---
     if payload == "clear_cart":
         with _lock:
             user_carts[sender_id] = []
@@ -979,7 +1147,6 @@ def handle_callback(data):
         answer_callback(callback_id, "Нет доступа")
         return jsonify({"ok": True}), 200
 
-    # --- admin_add_category_start ---
     if payload == "admin_add_category_start":
         answer_callback(callback_id, "Добавляем категорию")
         send_message(user_id=sender_id, text="\U0001F4E6 Напишите название новой категории:", keyboard=build_cancel_keyboard())
@@ -988,7 +1155,6 @@ def handle_callback(data):
             save_state()
         return jsonify({"ok": True}), 200
 
-    # --- admin_add_product_start ---
     if payload == "admin_add_product_start":
         answer_callback(callback_id, "Добавляем товар")
         cats = CATALOG_DATA.get("categories", [])
@@ -998,7 +1164,6 @@ def handle_callback(data):
         send_message(user_id=sender_id, text="\U0001F4CB Выберите категорию для нового товара:", keyboard=build_admin_categories_keyboard("admin_add_product_cat"))
         return jsonify({"ok": True}), 200
 
-    # --- admin_add_product_cat:<index> ---
     if payload.startswith("admin_add_product_cat:"):
         cat_index = int(payload.split(":", 1)[1])
         cat = CATALOG_DATA["categories"][cat_index]
@@ -1009,7 +1174,6 @@ def handle_callback(data):
             save_state()
         return jsonify({"ok": True}), 200
 
-    # --- admin_edit_category_start ---
     if payload == "admin_edit_category_start":
         answer_callback(callback_id, "Редактируем категорию")
         cats = CATALOG_DATA.get("categories", [])
@@ -1019,7 +1183,6 @@ def handle_callback(data):
         send_message(user_id=sender_id, text="\u270F\uFE0F Выберите категорию для переименования:", keyboard=build_admin_categories_keyboard("admin_edit_category"))
         return jsonify({"ok": True}), 200
 
-    # --- admin_edit_category:<index> ---
     if payload.startswith("admin_edit_category:"):
         cat_index = int(payload.split(":", 1)[1])
         cat = CATALOG_DATA["categories"][cat_index]
@@ -1030,7 +1193,6 @@ def handle_callback(data):
             save_state()
         return jsonify({"ok": True}), 200
 
-    # --- admin_edit_product_start ---
     if payload == "admin_edit_product_start":
         answer_callback(callback_id, "Редактируем товар")
         cats = CATALOG_DATA.get("categories", [])
@@ -1040,7 +1202,6 @@ def handle_callback(data):
         send_message(user_id=sender_id, text="\u270F\uFE0F Выберите категорию:", keyboard=build_admin_categories_keyboard("admin_edit_product_cat"))
         return jsonify({"ok": True}), 200
 
-    # --- admin_edit_product_cat:<index> ---
     if payload.startswith("admin_edit_product_cat:"):
         cat_index = int(payload.split(":", 1)[1])
         cat = CATALOG_DATA["categories"][cat_index]
@@ -1051,7 +1212,6 @@ def handle_callback(data):
         send_message(user_id=sender_id, text="\U0001F4CB Товары в категории:", keyboard=build_admin_products_keyboard(cat_index, "admin_edit_product"))
         return jsonify({"ok": True}), 200
 
-    # --- admin_edit_product:<cat_index>:<item_index> ---
     if payload.startswith("admin_edit_product:"):
         parts = payload.split(":", 2)
         cat_index, item_index = int(parts[1]), int(parts[2])
@@ -1069,7 +1229,6 @@ def handle_callback(data):
         send_message(user_id=sender_id, text=text, keyboard=build_admin_product_edit_fields_keyboard(cat_index, item_index))
         return jsonify({"ok": True}), 200
 
-    # --- admin_edit_field:<cat_index>:<item_index>:<field> ---
     if payload.startswith("admin_edit_field:"):
         parts = payload.split(":", 3)
         cat_index, item_index, field = int(parts[1]), int(parts[2]), parts[3]
@@ -1087,7 +1246,6 @@ def handle_callback(data):
             save_state()
         return jsonify({"ok": True}), 200
 
-    # --- admin_del_category_start ---
     if payload == "admin_del_category_start":
         answer_callback(callback_id, "Удаляем категорию")
         cats = CATALOG_DATA.get("categories", [])
@@ -1097,7 +1255,6 @@ def handle_callback(data):
         send_message(user_id=sender_id, text="\U0001F4E6 Выберите категорию для удаления:", keyboard=build_admin_categories_keyboard("admin_del_category"))
         return jsonify({"ok": True}), 200
 
-    # --- admin_del_category:<index> ---
     if payload.startswith("admin_del_category:"):
         cat_index = int(payload.split(":", 1)[1])
         cat = CATALOG_DATA["categories"][cat_index]
@@ -1112,7 +1269,6 @@ def handle_callback(data):
         )
         return jsonify({"ok": True}), 200
 
-    # --- admin_del_category_confirm:<index> ---
     if payload.startswith("admin_del_category_confirm:"):
         cat_index = int(payload.split(":", 1)[1])
         cat = CATALOG_DATA["categories"][cat_index]
@@ -1122,7 +1278,6 @@ def handle_callback(data):
         send_message(user_id=sender_id, text=f"\u2705 Категория «{cat['name']}» удалена.", keyboard=build_admin_edit_keyboard())
         return jsonify({"ok": True}), 200
 
-    # --- admin_del_product_start ---
     if payload == "admin_del_product_start":
         answer_callback(callback_id, "Удаляем товар")
         cats = CATALOG_DATA.get("categories", [])
@@ -1132,7 +1287,6 @@ def handle_callback(data):
         send_message(user_id=sender_id, text="\U0001F4CB Выберите категорию:", keyboard=build_admin_categories_keyboard("admin_del_product_cat"))
         return jsonify({"ok": True}), 200
 
-    # --- admin_del_product_cat:<index> ---
     if payload.startswith("admin_del_product_cat:"):
         cat_index = int(payload.split(":", 1)[1])
         cat = CATALOG_DATA["categories"][cat_index]
@@ -1143,7 +1297,6 @@ def handle_callback(data):
         send_message(user_id=sender_id, text="\U0001F4CB Выберите товар для удаления:", keyboard=build_admin_products_keyboard(cat_index, "admin_del_product"))
         return jsonify({"ok": True}), 200
 
-    # --- admin_del_product:<cat_index>:<item_index> ---
     if payload.startswith("admin_del_product:") and not payload.startswith("admin_del_product_cat:") and not payload.startswith("admin_del_product_confirm:"):
         parts = payload.split(":", 2)
         cat_index, item_index = int(parts[1]), int(parts[2])
@@ -1159,7 +1312,6 @@ def handle_callback(data):
         )
         return jsonify({"ok": True}), 200
 
-    # --- admin_del_product_confirm:<cat_index>:<item_index> ---
     if payload.startswith("admin_del_product_confirm:"):
         parts = payload.split(":", 2)
         cat_index, item_index = int(parts[1]), int(parts[2])
@@ -1177,7 +1329,6 @@ def handle_callback(data):
 # === АДМИН: ОБРАБОТКА ТЕКСТОВЫХ ШАГОВ ===
 
 def handle_admin_steps(sender_id, text):
-    """Обработка админ-шагов. Возвращает True если обработано."""
     state = pending_replies.get(sender_id)
     if not state or not isinstance(state, dict):
         return False
@@ -1185,7 +1336,6 @@ def handle_admin_steps(sender_id, text):
     if not step or not step.startswith("admin_"):
         return False
 
-    # Проверка timeout
     if "timestamp" in state and time.time() - state["timestamp"] > SESSION_TIMEOUT:
         with _lock:
             del pending_replies[sender_id]
@@ -1193,7 +1343,6 @@ def handle_admin_steps(sender_id, text):
         send_message(user_id=sender_id, text="\u23F1\uFE0F Время ожидания истекло. Начните заново.", keyboard=build_main_menu_keyboard())
         return True
 
-    # --- admin_add_category ---
     if step == "admin_add_category":
         name = (text or "").strip()
         if not name:
@@ -1215,7 +1364,6 @@ def handle_admin_steps(sender_id, text):
         )
         return True
 
-    # --- admin_add_product_name ---
     if step == "admin_add_product_name":
         name = (text or "").strip()
         if not name:
@@ -1229,7 +1377,6 @@ def handle_admin_steps(sender_id, text):
         send_message(user_id=sender_id, text="\U0001F4B0 Напишите цену в рублях (только число):", keyboard=build_cancel_keyboard())
         return True
 
-    # --- admin_add_product_price ---
     if step == "admin_add_product_price":
         price_text = (text or "").strip()
         try:
@@ -1247,7 +1394,6 @@ def handle_admin_steps(sender_id, text):
         send_message(user_id=sender_id, text="\U0001F4DD Напишите краткое описание (2–3 строки):", keyboard=build_cancel_keyboard())
         return True
 
-    # --- admin_add_product_desc ---
     if step == "admin_add_product_desc":
         desc = (text or "").strip()
         if not desc:
@@ -1261,7 +1407,6 @@ def handle_admin_steps(sender_id, text):
         send_message(user_id=sender_id, text="\U0001F4D8 Отправьте ссылку на фото. Если фото нет — напишите «нет»:", keyboard=build_cancel_keyboard())
         return True
 
-    # --- admin_add_product_photo ---
     if step == "admin_add_product_photo":
         photo = (text or "").strip()
         if photo.lower() in ("нет", "no", "-", "нету"):
@@ -1291,7 +1436,6 @@ def handle_admin_steps(sender_id, text):
         )
         return True
 
-    # --- admin_edit_category_name ---
     if step == "admin_edit_category_name":
         name = (text or "").strip()
         if not name:
@@ -1311,7 +1455,6 @@ def handle_admin_steps(sender_id, text):
         )
         return True
 
-    # --- admin_edit_field_value ---
     if step == "admin_edit_field_value":
         value = (text or "").strip()
         if not value:
@@ -1349,7 +1492,6 @@ def handle_admin_steps(sender_id, text):
         )
         return True
 
-    # --- admin_import ---
     if step == "admin_import":
         raw = (text or "").strip()
 
@@ -1511,6 +1653,7 @@ def handle_pending_state(sender_id, text):
             )
         send_message(user_id=NOTIFY_CHAT_ID, text=forward_text)
         send_message(user_id=sender_id, text="\u2705 Спасибо, вопрос передан мастеру!\n\n\u23F1\uFE0F Ответим в течение 30 минут.", keyboard=build_main_menu_keyboard())
+        track_event("questions", "questions")
         logger.info(f"Вопрос #{num} от user_id={sender_id}: {question_text}")
         return True
 
@@ -1536,6 +1679,7 @@ def handle_pending_state(sender_id, text):
         with _lock:
             user_carts[sender_id] = []
             save_state()
+        track_event("cart_orders", "cart_orders")
         return True
 
     if step == "waiting_contact_quick":
@@ -1551,6 +1695,7 @@ def handle_pending_state(sender_id, text):
         order_text = f"\U0001F4D8 Быстрый заказ!\n\nТовар: \"{item['name']}\"\nЦена: {item['price']} руб.\nИмя и телефон: {contact_text}"
         send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
         send_message(user_id=sender_id, text="\u2705 Спасибо! Мастер свяжется с вами в ближайшее время.", keyboard=build_main_menu_keyboard())
+        track_event("quick_orders", "quick_orders")
         return True
 
     if step == "waiting_name":
@@ -1588,6 +1733,7 @@ def handle_pending_state(sender_id, text):
         with _lock:
             user_carts[sender_id] = []
             save_state()
+        track_event("cart_orders", "cart_orders")
         return True
 
     if step == "waiting_phone_quick":
@@ -1602,6 +1748,7 @@ def handle_pending_state(sender_id, text):
         order_text = f"\U0001F4D8 Быстрый заказ!\nТовар: \"{item['name']}\"\nЦена: {item['price']} руб.\nТелефон: {phone}"
         send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
         send_message(user_id=sender_id, text="\u2705 Спасибо! Мастер свяжется с вами в ближайшее время.", keyboard=build_main_menu_keyboard())
+        track_event("quick_orders", "quick_orders")
         return True
 
     return False
@@ -1638,6 +1785,9 @@ def handle_message_created(data):
     logger.info(f"Сообщение от user_id={sender_id}: {text}")
     cmd = text.lower().strip() if text else ""
 
+    # Трекинг пользователя
+    track_user(sender_id)
+
     # Перехват ответов админа
     if is_admin(sender_id) and text and not text.startswith("/"):
         if handle_admin_reply(sender_id, text):
@@ -1673,7 +1823,10 @@ def handle_message_created(data):
             admin_import_catalog(sender_id)
             return
         if cmd == "/синхронизировать":
-            admin_sync_catalog(sender_id)
+            admin_sync_s3(sender_id)
+            return
+        if cmd in ["/статистика", "/стата", "/stats"]:
+            admin_show_stats(sender_id)
             return
 
     # Кнопки главного меню — очищаем pending state
@@ -1682,6 +1835,7 @@ def handle_message_created(data):
             if sender_id in pending_replies:
                 del pending_replies[sender_id]
                 save_state()
+        track_event("catalog_views")
         show_catalog(sender_id)
         return
     if text and text.strip() == "\U0001F6D2 Корзина":
@@ -1714,6 +1868,7 @@ def handle_message_created(data):
 
     # Текстовые команды
     if cmd in ["/catalog", "/каталог"]:
+        track_event("catalog_views")
         show_catalog(sender_id)
         return
     if cmd in ["/cart", "/корзина"]:
@@ -1727,6 +1882,7 @@ def handle_message_created(data):
         )
         return
 
+    # /вопросы — только для админа
     if cmd == "/вопросы" and is_admin(sender_id):
         if active_dialogs:
             lines = []
@@ -1755,10 +1911,12 @@ def handle_message_created(data):
             if handle_pending_reply_comment(sender_id, text):
                 return
 
+    # /start
     if cmd and cmd.startswith("/start"):
         send_welcome(sender_id)
         return
 
+    # Fallback
     send_message(user_id=sender_id, text="Я не совсем понял сообщение.\n\n\U0001F447Выберите действие\U0001F447", keyboard=build_main_menu_keyboard())
 
 
@@ -1788,6 +1946,8 @@ def webhook():
         chat_id = data.get("chat_id")
         sender_id = data.get("user", {}).get("user_id")
         logger.info(f"bot_started: chat_id={chat_id}, user_id={sender_id}")
+        if sender_id:
+            track_user(sender_id)
         if chat_id:
             send_welcome(chat_id, is_chat=True)
         elif sender_id:
@@ -1810,6 +1970,7 @@ def webhook():
         post_link = build_post_link(chat_id, post_id)
         keyboard = build_post_keyboard(post_link, post_id, comment_mid)
         send_message(user_id=NOTIFY_CHAT_ID, text=notification, attachments=keyboard)
+        track_event("comments_forwarded")
         return jsonify({"ok": True}), 200
 
     if update_type == "comment_edited":
@@ -1845,6 +2006,8 @@ def index():
         "active_dialogs": len(active_dialogs),
         "pending_replies": len(pending_replies),
         "carts": len(user_carts),
+        "unique_users": len(unique_users),
+        "total_orders": stats.get("total_quick_orders", 0) + stats.get("total_cart_orders", 0),
     }), 200
 
 
@@ -1856,11 +2019,14 @@ def health():
         "webhook_url_configured": bool(WEBHOOK_URL),
         "notify_chat_configured": bool(NOTIFY_CHAT_ID),
         "catalog_items": len(CATALOG_INDEX),
+        "s3_enabled": S3_ENABLED,
     }), 200
 
 
 # === ИНИЦИАЛИЗАЦИЯ ===
 load_state()
+init_stats()
+_cleanup_old_daily()
 register_commands()
 update_webhook_subscription()
 
