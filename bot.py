@@ -697,7 +697,8 @@ def register_commands():
         {"name": "каталог_админ", "description": "Список каталога с id (админ)"},
         {"name": "синхронизировать", "description": "Загрузить каталог в облако (админ)"},
         {"name": "статистика", "description": "Статистика бота (админ)"},
-        {"name": "сделка", "description": "Закрыть сделку, списать товар (админ)"},
+        {"name": "сделка", "description": "Закрыть или отменить заказ (админ)"},
+        {"name": "отменить", "description": "Отменить заказ, вернуть товар (админ)"},
     ]
     resp = api_request("PATCH", "/me/commands", json={"commands": commands})
     if resp:
@@ -895,15 +896,10 @@ def send_product_card(user_id, item, cat_index=None):
             {"type": "callback", "text": "\u2753 Задать вопрос", "payload": f"ask_question:{item['id']}"},
         ],
     ]
-    # Fix 14: кнопка возврата к категории
-    if cat_index is not None:
-        keyboard_buttons[1].append(
-            {"type": "callback", "text": "\u21A9\uFE0F К категории", "payload": f"show_category:{cat_index}"}
-        )
-    else:
-        keyboard_buttons[1].append(
-            {"type": "message", "text": "\U0001F4CB Каталог", "payload": "\U0001F4CB Каталог"}
-        )
+    # Fix 14: кнопка возврата к категориям
+    keyboard_buttons[1].append(
+        {"type": "callback", "text": "\u21A9\uFE0F К категориям", "payload": "back_to_categories"}
+    )
     send_message(user_id=user_id, text=text, attachments=attachments, keyboard=keyboard_buttons)
 
 
@@ -939,25 +935,34 @@ def show_cart(user_id):
             cart_text += f"\u2022 \"{item['name']}\" — {item['price']} руб. \u00d7 {qty}{stock_text}\n"
             total += item["price"] * qty
     cart_text += f"\n\U0001F4B0 Итого: {total} руб.\n\n"
-    keyboard_buttons = [
-        [
-            {"type": "callback", "text": "\u2705 Оформить заказ", "payload": "start_checkout"},
-            {"type": "callback", "text": "\U0001F5D1 Очистить", "payload": "clear_cart"},
-        ],
-        [
-            {"type": "message", "text": "\U0001F4CB Каталог", "payload": "\U0001F4CB Каталог"},
-        ],
-    ]
+    keyboard_buttons = []
+    # Кнопки + и - для каждого товара
+    for item_id in item_counts:
+        item = find_item_by_id(item_id)
+        if item:
+            keyboard_buttons.append([
+                {"type": "callback", "text": "\u2795", "payload": f"cart_add_one:{item_id}"},
+                {"type": "callback", "text": f"{item['name']} \u00d7 {item_counts[item_id]}", "payload": f"noop:{item_id}"},
+                {"type": "callback", "text": "\u2796", "payload": f"cart_remove_one:{item_id}"},
+            ])
+    # Кнопки управления
+    keyboard_buttons.append([
+        {"type": "callback", "text": "\u2705 Оформить заказ", "payload": "start_checkout"},
+        {"type": "callback", "text": "\U0001F5D1 Очистить", "payload": "clear_cart"},
+    ])
+    keyboard_buttons.append([
+        {"type": "message", "text": "\U0001F4CB Каталог", "payload": "\U0001F4CB Каталог"},
+    ])
     send_message(user_id=user_id, text=cart_text + "\U0001F447Чтобы продолжить, нажмите кнопку\U0001F447", keyboard=keyboard_buttons)
 
 
 # === ВАЛИДАЦИЯ ===
-def validate_contact(text):
+def validate_phone(text):
     if not text or len(text.strip()) < 3:
-        return False, "Слишком короткое сообщение. Напишите имя и номер телефона."
+        return False, "Слишком короткое сообщение. Напишите номер телефона."
     phone_match = re.search(r"[\d\+\-\(\)\s]{7,}", text)
     if not phone_match:
-        return False, "Не вижу номер телефона. Напишите имя и номер, например: «Иван 89001234567»."
+        return False, "Не вижу номер телефона. Напишите номер, например: 89001234567."
     return True, ""
 # === АДМИН: КЛАВИАТУРЫ ===
 
@@ -1220,7 +1225,7 @@ def admin_close_deal_start(user_id):
     if not is_admin(user_id):
         return
     if not pending_orders:
-        send_message(user_id=user_id, text="\u26A0\uFE0F Нет pending-заказов. Заказы появятся, когда клиенты оформят заказ через бота.", keyboard=build_main_menu_keyboard())
+        send_message(user_id=user_id, text="\u26A0\uFE0F Нет открытых заказов. Заказы появятся, когда клиенты оформят заказ через бота.", keyboard=build_main_menu_keyboard())
         return
     buttons = []
     for num, order in sorted(pending_orders.items()):
@@ -1239,7 +1244,7 @@ def admin_close_deal_confirm(user_id, order_id):
         return
     order = pending_orders.get(order_id)
     if not order or order.get("status") != "pending":
-        send_message(user_id=user_id, text=f"\u26A0\uFE0F Заказ #{order_id} не найден или уже закрыт.")
+        send_message(user_id=user_id, text=f"\u26A0\uFE0F Заказ #{order_id} не найден или уже обработан.")
         return
     lines = [f"\U0001F4D8 Заказ #{order_id}\n"]
     for it in order.get("items", []):
@@ -1247,18 +1252,20 @@ def admin_close_deal_confirm(user_id, order_id):
         stock = item.get("stock", 0) if item else 0
         stock_note = f" (на складе: {stock})" if item else ""
         lines.append(f"  \u2022 \"{it['name']}\" x{it['qty']} — {it['price']} руб.{stock_note}")
-    lines.append(f"\n\U0001F4DD Контакт: {order.get('contact', '—')}")
+    lines.append(f"\n\U0001F4DD Телефон: {order.get('contact', '—')}")
     lines.append(f"\u23F1 {datetime.fromtimestamp(order.get('timestamp', 0)).strftime('%Y-%m-%d %H:%M')}")
-    lines.append(f"\n\U00002754 Закрыть сделку? Товар будет списан, корзина клиента очищена.")
+    lines.append(f"\n\U00002754 Закрыть сделку? Корзина клиента будет очищена.")
     keyboard = [
         [{"type": "callback", "text": "\u2705 Да, закрыть", "payload": f"admin_close_deal_yes:{order_id}"}],
-        [{"type": "callback", "text": "\u274C Отмена", "payload": "cancel_action"}],
+        [{"type": "callback", "text": "\u274C Отменить заказ", "payload": f"admin_cancel_order:{order_id}"}],
+        [{"type": "callback", "text": "\u2B05\uFE0F Назад", "payload": "admin_close_deal_start"}],
     ]
     send_message(user_id=user_id, text="\n".join(lines), keyboard=keyboard)
 
 
 def admin_close_deal_execute(user_id, order_id):
-    """Закрывает сделку: списывает товар, очищает корзину клиента."""
+    """Закрывает сделку: помечает заказ закрытым, очищает корзину клиента.
+    Товар уже списан при оформлении заказа (_create_order)."""
     if not is_admin(user_id):
         return
     order = pending_orders.get(order_id)
@@ -1266,19 +1273,7 @@ def admin_close_deal_execute(user_id, order_id):
         send_message(user_id=user_id, text=f"\u26A0\uFE0F Заказ #{order_id} не найден или уже закрыт.", keyboard=build_main_menu_keyboard())
         return
     client_id = str(order.get("user_id", ""))
-    # Fix 2: блокировка для защиты CATALOG_DATA
-    stock_changes = []
     with _lock:
-        # Списываем товар
-        for it in order.get("items", []):
-            item = find_item_by_id(it["id"])
-            if item:
-                current = item.get("stock", 0)
-                new_stock = max(0, current - it["qty"])
-                item["stock"] = new_stock
-                stock_changes.append(f"  \u2022 \"{it['name']}\": {current} \u2192 {new_stock} \u0448\u0442.")
-                logger.info(f"Списание: {it['name']} -{it['qty']} (было {current}, стало {new_stock})")
-        save_catalog()
         # Очищаем корзину клиента
         if client_id in user_carts:
             user_carts[client_id] = []
@@ -1286,11 +1281,7 @@ def admin_close_deal_execute(user_id, order_id):
         save_state()
     track_event("deal_closed")
     # Уведомляем админа
-    result_lines = [f"\u2705 Сделка #{order_id} закрыта!\n\n\u0001F4E6 Списано со склада:"]
-    if stock_changes:
-        result_lines.extend(stock_changes)
-    else:
-        result_lines.append("  (товары не найдены в каталоге)")
+    result_lines = [f"\u2705 Сделка #{order_id} закрыта!\n\n\U0001F4E6 Товар уже списан со склада при оформлении заказа."]
     result_lines.append(f"\n\U0001F6D2 Корзина клиента очищена.")
     send_message(user_id=user_id, text="\n".join(result_lines), keyboard=build_main_menu_keyboard())
     # Уведомляем клиента
@@ -1301,6 +1292,47 @@ def admin_close_deal_execute(user_id, order_id):
             keyboard=build_main_menu_keyboard(),
         )
     logger.info(f"Сделка #{order_id} закрыта, клиент {client_id}")
+
+
+def admin_cancel_order_execute(user_id, order_id):
+    """Отменяет заказ: возвращает товар на склад, помечает заказ отменённым."""
+    if not is_admin(user_id):
+        return
+    order = pending_orders.get(order_id)
+    if not order or order.get("status") != "pending":
+        send_message(user_id=user_id, text=f"\u26A0\uFE0F Заказ #{order_id} не найден или уже обработан.", keyboard=build_main_menu_keyboard())
+        return
+    client_id = str(order.get("user_id", ""))
+    stock_changes = []
+    with _lock:
+        # Возвращаем товар на склад
+        for it in order.get("items", []):
+            item = find_item_by_id(it["id"])
+            if item:
+                current = item.get("stock", 0)
+                new_stock = current + it["qty"]
+                item["stock"] = new_stock
+                stock_changes.append(f"  \u2022 \"{it['name']}\": {current} \u2192 {new_stock} \u0448\u0442.")
+                logger.info(f"Возврат при отмене: {it['name']} +{it['qty']} (было {current}, стало {new_stock})")
+        save_catalog()
+        order["status"] = "cancelled"
+        save_state()
+    # Уведомляем админа
+    result_lines = [f"\u274C Заказ #{order_id} отменён!\n\n\U0001F4E6 Товар возвращён на склад:"]
+    if stock_changes:
+        result_lines.extend(stock_changes)
+    else:
+        result_lines.append("  (товары не найдены в каталоге)")
+    send_message(user_id=user_id, text="\n".join(result_lines), keyboard=build_main_menu_keyboard())
+    # Уведомляем клиента
+    if client_id:
+        send_message(
+            user_id=client_id,
+            text="\u26A0\uFE0F Ваш заказ отменён. Если у вас есть вопросы — задайте их через бота.",
+            keyboard=build_main_menu_keyboard(),
+        )
+    logger.info(f"Заказ #{order_id} отменён, клиент {client_id}")
+
 # === CALLBACK ОБРАБОТКА ===
 # Fix 4: обёртка try/except для защиты от битых/устаревших callback'ов
 
@@ -1342,6 +1374,13 @@ def _handle_callback_inner(data):
         return jsonify({"ok": True}), 200
 
     track_user(sender_id)
+
+    # --- admin_cancel_order:<order_id> ---
+    if payload.startswith("admin_cancel_order:"):
+        order_id = int(payload.split(":", 1)[1])
+        answer_callback(callback_id, "Отменяю заказ...")
+        admin_cancel_order_execute(sender_id, order_id)
+        return jsonify({"ok": True}), 200
 
     # --- cancel_action ---
     if payload == "cancel_action":
@@ -1392,6 +1431,12 @@ def _handle_callback_inner(data):
                 time.sleep(0.3)
         return jsonify({"ok": True}), 200
 
+    # --- back_to_categories ---
+    if payload == "back_to_categories":
+        answer_callback(callback_id, "К категориям")
+        show_catalog(sender_id)
+        return jsonify({"ok": True}), 200
+
     # --- add_to_cart:<item_id> ---
     if payload.startswith("add_to_cart:"):
         item_id = payload.split(":", 1)[1]
@@ -1431,7 +1476,7 @@ def _handle_callback_inner(data):
         stock_text = get_stock_text(item)
         send_message(
             user_id=sender_id,
-            text=f"\U0001F4D8 Быстрый заказ: \"{item['name']}\" (Цена: {item['price']} руб.){stock_text}\n\nЧтобы мастер связался с вами \U0001F4A1\n\U0001F4DD Напишите, как вас зовут и номер вашего телефона (в любом формате)",
+            text=f"\U0001F4D8 Быстрый заказ: \"{item['name']}\" (Цена: {item['price']} руб.){stock_text}\n\nЧтобы мастер связался с вами \U0001F4A1\n\U0001F4DD Напишите ваш номер телефона — мастер свяжется с вами",
             keyboard=build_cancel_keyboard(),
         )
         with _lock:
@@ -1483,7 +1528,7 @@ def _handle_callback_inner(data):
         answer_callback(callback_id, "Начинаем оформление")
         send_message(
             user_id=sender_id,
-            text=f"\U0001F6D2 Оформляем заказ:\n\n{items_text}\U0001F4B0 Итого: {total} руб.\n\n\U0001F4DD Напишите, как вас зовут и номер вашего телефона (в любом формате)",
+            text=f"\U0001F6D2 Оформляем заказ:\n\n{items_text}\U0001F4B0 Итого: {total} руб.\n\n\U0001F4DD Напишите ваш номер телефона — мастер свяжется с вами",
             keyboard=build_cancel_keyboard(),
         )
         with _lock:
@@ -1496,8 +1541,23 @@ def _handle_callback_inner(data):
             save_state()
         return jsonify({"ok": True}), 200
 
-    # --- clear_cart ---
+    # --- clear_cart (показ подтверждения) ---
     if payload == "clear_cart":
+        answer_callback(callback_id, "Подтвердите очистку")
+        send_message(
+            user_id=sender_id,
+            text="\u26A0\uFE0F Вы уверены, что хотите очистить корзину?",
+            keyboard=[
+                [
+                    {"type": "callback", "text": "\u2705 Да", "payload": "clear_cart_confirm"},
+                    {"type": "callback", "text": "\u274C Нет", "payload": "clear_cart_cancel"},
+                ],
+            ],
+        )
+        return jsonify({"ok": True}), 200
+
+    # --- clear_cart_confirm (фактическая очистка) ---
+    if payload == "clear_cart_confirm":
         with _lock:
             user_carts[sender_id] = []
             save_state()
@@ -1509,6 +1569,61 @@ def _handle_callback_inner(data):
         )
         return jsonify({"ok": True}), 200
 
+    # --- clear_cart_cancel (отмена очистки — показать корзину) ---
+    if payload == "clear_cart_cancel":
+        answer_callback(callback_id, "Отмена")
+        show_cart(sender_id)
+        return jsonify({"ok": True}), 200
+
+    # --- cart_add_one:<item_id> (добавить ещё один товар в корзину) ---
+    if payload.startswith("cart_add_one:"):
+        item_id = payload.split(":", 1)[1]
+        item = find_item_by_id(item_id)
+        if not item:
+            answer_callback(callback_id, "Товар не найден")
+            return jsonify({"ok": True}), 200
+        stock = item.get("stock", 0)
+        current_in_cart = user_carts.get(sender_id, []).count(item_id)
+        if stock > 0 and current_in_cart >= stock:
+            answer_callback(callback_id, f"В наличии только {stock} шт.")
+            return jsonify({"ok": True}), 200
+        with _lock:
+            if sender_id not in user_carts:
+                user_carts[sender_id] = []
+            user_carts[sender_id].append(item_id)
+            save_state()
+        answer_callback(callback_id, "\u2795 Добавлено")
+        show_cart(sender_id)
+        return jsonify({"ok": True}), 200
+
+    # --- cart_remove_one:<item_id> (убрать один товар из корзины) ---
+    if payload.startswith("cart_remove_one:"):
+        item_id = payload.split(":", 1)[1]
+        item = find_item_by_id(item_id)
+        if not item:
+            answer_callback(callback_id, "Товар не найден")
+            return jsonify({"ok": True}), 200
+        with _lock:
+            cart = user_carts.get(sender_id, [])
+            if item_id in cart:
+                cart.remove(item_id)
+                save_state()
+        answer_callback(callback_id, "\u2796 Убрано")
+        if not user_carts.get(sender_id, []):
+            send_message(
+                user_id=sender_id,
+                text="\U0001F6D2 Ваша корзина пуста.\n\n\U0001F449 Откройте «\U0001F4CB Каталог» — выберите изделие!",
+                keyboard=build_catalog_keyboard(),
+            )
+        else:
+            show_cart(sender_id)
+        return jsonify({"ok": True}), 200
+
+    # --- noop:<item_id> (заглушка для кнопки с названием товара) ---
+    if payload.startswith("noop:"):
+        answer_callback(callback_id, "")
+        return jsonify({"ok": True}), 200
+
     # ========================
     # === АДМИН CALLBACK'и ===
     # ========================
@@ -1518,7 +1633,7 @@ def _handle_callback_inner(data):
 
     # --- admin_close_deal_start ---
     if payload == "admin_close_deal_start":
-        answer_callback(callback_id, "Закрытие сделки")
+        answer_callback(callback_id, "Управление заказами")
         admin_close_deal_start(sender_id)
         return jsonify({"ok": True}), 200
 
@@ -2186,11 +2301,21 @@ def handle_admin_reply(sender_id, text):
 
 
 def _create_order(sender_id, items_list, contact_text):
-    """Создаёт запись заказа в pending_orders."""
+    """Создаёт запись заказа в pending_orders и списывает товар со склада."""
     global order_counter
     order_counter += 1
     num = order_counter
     with _lock:
+        # Списываем товар со склада сразу при оформлении заказа
+        for it in items_list:
+            item = find_item_by_id(it["id"])
+            if item:
+                current = item.get("stock", 0)
+                if current > 0:
+                    new_stock = max(0, current - it["qty"])
+                    item["stock"] = new_stock
+                    logger.info(f"Списание при заказе: {it['name']} -{it['qty']} (было {current}, стало {new_stock})")
+        save_catalog()
         pending_orders[num] = {
             "user_id": sender_id,
             "items": items_list,
@@ -2199,7 +2324,7 @@ def _create_order(sender_id, items_list, contact_text):
             "status": "pending",
         }
         save_state()
-    logger.info(f"Создан заказ #{num} от user_id={sender_id}, товаров: {len(items_list)}")
+    logger.info(f"Создан заказ #{num} от user_id={sender_id}, товаров: {len(items_list)}, товар списан со склада")
     return num
 
 
@@ -2260,7 +2385,7 @@ def handle_pending_state(sender_id, text):
 
     if step == "waiting_contact":
         contact_text = (text or "").strip()
-        valid, msg = validate_contact(contact_text)
+        valid, msg = validate_phone(contact_text)
         if not valid:
             send_message(user_id=sender_id, text=msg, keyboard=build_cancel_keyboard())
             return True
@@ -2273,7 +2398,7 @@ def handle_pending_state(sender_id, text):
         from collections import Counter
         item_counts = Counter(cart)
         items_list = []
-        order_text = f"\U0001F4D8 Новый заказ!\n\nИмя и телефон: {contact_text}\nТовары:\n"
+        order_text = f"\U0001F4D8 Новый заказ!\n\nТелефон: {contact_text}\nТовары:\n"
         for item_id, qty in item_counts.items():
             item = find_item_by_id(item_id)
             if item:
@@ -2291,7 +2416,7 @@ def handle_pending_state(sender_id, text):
 
     if step == "waiting_contact_quick":
         contact_text = (text or "").strip()
-        valid, msg = validate_contact(contact_text)
+        valid, msg = validate_phone(contact_text)
         if not valid:
             send_message(user_id=sender_id, text=msg, keyboard=build_cancel_keyboard())
             return True
@@ -2310,7 +2435,7 @@ def handle_pending_state(sender_id, text):
         track_event("quick_order")
         items_list = [{"id": item["id"], "name": item["name"], "price": item["price"], "qty": 1}]
         order_num = _create_order(sender_id, items_list, contact_text)
-        order_text = f"\U0001F4D8 Быстрый заказ!\n\nТовар: \"{item['name']}\"\nЦена: {item['price']} руб.\nИмя и телефон: {contact_text}\n\U0001F194 Заказ #{order_num} — /сделка для закрытия"
+        order_text = f"\U0001F4D8 Быстрый заказ!\n\nТовар: \"{item['name']}\"\nЦена: {item['price']} руб.\nТелефон: {contact_text}\n\U0001F194 Заказ #{order_num} — /сделка для закрытия"
         send_message(user_id=NOTIFY_CHAT_ID, text=order_text)
         send_message(user_id=sender_id, text=f"\u2705 Спасибо за заказ! Номер заказа: #{order_num}\n\nМастер свяжется с вами в ближайшее время.", keyboard=build_main_menu_keyboard())
         return True
@@ -2459,7 +2584,7 @@ def handle_message_created(data):
         if cmd in ["/статистика", "/стата", "/stats"]:
             admin_show_stats(sender_id)
             return
-        if cmd in ["/сделка", "/сделки", "/закрыть"]:
+        if cmd in ["/сделка", "/сделки", "/закрыть", "/отменить", "/отмена_заказа"]:
             admin_close_deal_start(sender_id)
             return
 
